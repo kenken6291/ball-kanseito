@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="締め切りと「いま誰がボールを持っているか」を発着案内板で見張る、マルチタスク管理アプリ">
+<title>ボール管制塔</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=DotGothic16&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<video id="bgVideo" class="bg-video" muted loop playsinline preload="none" aria-hidden="true"></video>
+<div class="bg-veil" aria-hidden="true"></div>
+
+<!-- ===================== 認証 ===================== -->
+<main id="authView" class="auth" hidden>
+  <div class="auth-card">
+    <h1 class="brand"><span class="ball" aria-hidden="true"></span>ボール管制塔</h1>
+    <p class="auth-lead">締め切りと、いま誰がボールを持っているか。全部の便を、ひとつの案内板で見張ります。</p>
+
+    <form class="auth-form" data-view="login" novalidate>
+      <h2>ログイン</h2>
+      <label class="field">メールアドレス
+        <input type="email" name="email" autocomplete="email" required>
+      </label>
+      <label class="field">パスワード
+        <span class="pw"><input type="password" name="password" autocomplete="current-password" required><button type="button" class="eye" aria-label="パスワードを表示" aria-pressed="false"></button></span>
+      </label>
+      <p class="form-msg" role="alert"></p>
+      <button class="btn primary wide" type="submit">ログイン</button>
+      <div class="auth-links">
+        <button type="button" class="link" data-go="register">新規登録</button>
+        <button type="button" class="link" data-go="forgot">パスワードを忘れた</button>
+      </div>
+    </form>
+
+    <form class="auth-form" data-view="register" novalidate hidden>
+      <h2>新規登録</h2>
+      <p class="hint">登録したメールアドレスに仮パスワードが届きます。</p>
+      <label class="field">メールアドレス
+        <input type="email" name="email" autocomplete="email" required>
+      </label>
+      <label class="field">ニックネーム（実況で呼ばれる名前）
+        <input type="text" name="nickname" maxlength="20" autocomplete="nickname" required>
+      </label>
+      <p class="form-msg" role="alert"></p>
+      <button class="btn primary wide" type="submit">仮パスワードを受け取る</button>
+      <div class="auth-links"><button type="button" class="link" data-go="login">ログインに戻る</button></div>
+    </form>
+
+    <form class="auth-form" data-view="forgot" novalidate hidden>
+      <h2>パスワードの再発行</h2>
+      <p class="hint">登録済みのメールアドレスに、新しい仮パスワードを送ります。</p>
+      <label class="field">メールアドレス
+        <input type="email" name="email" autocomplete="email" required>
+      </label>
+      <p class="form-msg" role="alert"></p>
+      <button class="btn primary wide" type="submit">仮パスワードを再発行</button>
+      <div class="auth-links"><button type="button" class="link" data-go="login">ログインに戻る</button></div>
+    </form>
+
+    <form class="auth-form" data-view="change" novalidate hidden>
+      <h2>本パスワードの設定</h2>
+      <p class="hint">仮パスワードでログインしました。続けて使うには、本パスワードを設定してください。</p>
+      <label class="field">仮パスワード（現在のパスワード）
+        <span class="pw"><input type="password" name="currentPassword" autocomplete="current-password" required><button type="button" class="eye" aria-label="パスワードを表示" aria-pressed="false"></button></span>
+      </label>
+      <label class="field">新しいパスワード（英字と数字を含む8文字以上）
+        <span class="pw"><input type="password" name="newPassword" autocomplete="new-password" minlength="8" required><button type="button" class="eye" aria-label="パスワードを表示" aria-pressed="false"></button></span>
+      </label>
+      <label class="field">新しいパスワード（確認）
+        <span class="pw"><input type="password" name="confirmPassword" autocomplete="new-password" minlength="8" required><button type="button" class="eye" aria-label="パスワードを表示" aria-pressed="false"></button></span>
+      </label>
+      <p class="form-msg" role="alert"></p>
+      <button class="btn primary wide" type="submit">パスワードを変更して始める</button>
+      <div class="auth-links"><button type="button" class="link" data-act="logout">ログアウト</button></div>
+    </form>
+
+    <div class="auth-foot">
+      <button type="button" class="link" data-open="settings">接続設定</button>
+      <span class="app-version"></span>
+    </div>
+  </div>
+</main>
+
+<!-- ===================== メイン ===================== -->
+<div id="appView" class="app" hidden>
+  <header class="topbar">
+    <div class="brand small"><span class="ball" aria-hidden="true"></span>ボール管制塔</div>
+
+    <div class="rank" aria-live="polite">
+      <span class="rank-title" id="rankTitle">訓練生</span>
+      <span class="rank-lv" id="rankLv">Lv.1</span>
+      <span class="xpbar" aria-hidden="true"><i id="xpFill"></i></span>
+      <span class="xp-text" id="xpText">0 XP</span>
+    </div>
+
+    <nav class="top-actions">
+      <button id="btnNarrate" class="btn radio-btn" type="button">
+        <span class="wave" aria-hidden="true"><i></i><i></i><i></i></span>管制塔の実況を聞く
+      </button>
+      <button class="icon-btn" type="button" data-open="help" aria-label="使い方">？</button>
+      <button class="icon-btn" type="button" data-open="settings" aria-label="設定">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h9M19 7h1M4 17h3M13 17h7"/><circle cx="16" cy="7" r="2.5"/><circle cx="10" cy="17" r="2.5"/></g></svg>
+      </button>
+      <button class="icon-btn" type="button" data-act="logout" aria-label="ログアウト">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"/></svg>
+      </button>
+    </nav>
+  </header>
+
+  <!-- 発着案内板（主役） -->
+  <section class="board" aria-labelledby="boardTitle">
+    <div class="board-head">
+      <h2 id="boardTitle">発着案内</h2>
+      <p class="greet" id="greet"></p>
+      <time class="board-clock" id="clock">--:--</time>
+    </div>
+
+    <div class="board-tools">
+      <div class="seg" role="group" aria-label="表示する便">
+        <button type="button" class="on" data-filter="all" aria-pressed="true">運航中</button>
+        <button type="button" data-filter="mine" aria-pressed="false">自分のボール</button>
+        <button type="button" data-filter="them" aria-pressed="false">相手の返事待ち</button>
+        <button type="button" data-filter="done" aria-pressed="false">着陸済み</button>
+      </div>
+      <button id="btnAdd" class="btn amber" type="button">＋ ミッションを登録</button>
+    </div>
+
+    <div class="board-cols" aria-hidden="true">
+      <span>便名</span><span>ミッション</span><span>締め切り</span><span>ボール</span><span>状況</span><span></span>
+    </div>
+    <ol id="boardList" class="board-list"></ol>
+    <p id="boardEmpty" class="board-empty" hidden></p>
+  </section>
+
+  <div class="lower">
+    <section class="court" aria-labelledby="courtTitle">
+      <h2 id="courtTitle">ボールの所在</h2>
+      <div class="court-field">
+        <div class="side me">
+          <h3>自分の手元</h3>
+          <p class="count"><strong id="ballMineCount">0</strong>球</p>
+          <ul id="ballMine" class="ball-list"></ul>
+        </div>
+        <div class="net" aria-hidden="true"></div>
+        <div class="side them">
+          <h3>相手の手元</h3>
+          <p class="count"><strong id="ballThemCount">0</strong>球</p>
+          <ul id="ballThem" class="ball-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="today" aria-labelledby="todayTitle">
+      <h2 id="todayTitle">本日の運航記録</h2>
+      <dl class="today-stats">
+        <div><dt>今日の記録</dt><dd id="stLogs">0</dd></div>
+        <div><dt>本日着陸</dt><dd id="stLanded">0</dd></div>
+        <div><dt>残りの便</dt><dd id="stRemain">0</dd></div>
+        <div><dt>連続記録</dt><dd id="stStreak">0日</dd></div>
+      </dl>
+      <ol id="todayLogs" class="log-list"></ol>
+    </section>
+  </div>
+
+  <footer class="foot">
+    <span>背景・演出映像：<span id="earthAttr">Google Earth</span></span>
+    <span class="app-version"></span>
+  </footer>
+</div>
+
+<!-- ===================== 管制無線（実況） ===================== -->
+<section id="radio" class="radio" hidden aria-live="polite">
+  <div class="radio-head">
+    <span class="wave" id="radioWave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+    <strong>管制塔より</strong>
+    <button type="button" class="icon-btn small" id="radioReplay" aria-label="もう一度聞く" hidden>↻</button>
+    <button type="button" class="icon-btn small" id="radioClose" aria-label="閉じる">×</button>
+  </div>
+  <p id="radioText"></p>
+</section>
+
+<!-- ===================== 着陸演出 ===================== -->
+<div id="landing" class="landing" hidden>
+  <video id="landingVideo" muted playsinline preload="none" aria-hidden="true"></video>
+  <div class="landing-caption">
+    <p class="landing-kicker">着陸成功</p>
+    <p class="landing-title" id="landingTitle"></p>
+    <p class="landing-xp" id="landingXp"></p>
+    <button type="button" class="btn amber" id="landingClose">案内板に戻る</button>
+  </div>
+</div>
+
+<!-- ===================== ダイアログ：ミッション ===================== -->
+<dialog id="taskDialog" class="dlg">
+  <form method="dialog" id="taskForm" novalidate>
+    <h2 id="taskDialogTitle">ミッションを登録</h2>
+    <input type="hidden" name="taskId">
+    <label class="field">ミッション名
+      <input type="text" name="title" maxlength="80" required placeholder="例：町内会だよりの原稿">
+    </label>
+    <div class="grid2">
+      <label class="field">分類
+        <input type="text" name="category" maxlength="20" list="catList" placeholder="例：町内会">
+        <datalist id="catList"></datalist>
+      </label>
+      <label class="field">締め切り
+        <input type="datetime-local" name="deadline">
+      </label>
+    </div>
+    <label class="field">状況
+      <select name="status">
+        <option value="未着手">搭乗待ち（未着手）</option>
+        <option value="進行中">飛行中（進行中）</option>
+        <option value="保留">待機旋回（保留）</option>
+        <option value="完了">着陸（完了）</option>
+      </select>
+    </label>
+    <label class="field">次にやること
+      <textarea name="nextAction" rows="2" maxlength="300" placeholder="例：写真を3枚選ぶ"></textarea>
+    </label>
+
+    <fieldset class="ball-pick">
+      <legend>いまボールを持っているのは</legend>
+      <label><input type="radio" name="ballHolder" value="me" checked> 自分</label>
+      <label><input type="radio" name="ballHolder" value="other"> 相手（返事待ち）</label>
+    </fieldset>
+    <div class="wait-fields" hidden>
+      <div class="grid2">
+        <label class="field">相手の名前
+          <input type="text" name="waitName" maxlength="40" placeholder="例：佐藤さん">
+        </label>
+        <label class="field">所属・部署
+          <input type="text" name="waitDept" maxlength="40" placeholder="例：自治会 広報部">
+        </label>
+      </div>
+      <div class="grid2">
+        <label class="field">連絡先（メールか電話）
+          <input type="text" name="waitContact" maxlength="100" placeholder="例：sato@example.com">
+        </label>
+        <label class="field">回答をもらう期日
+          <input type="date" name="ballDue">
+        </label>
+      </div>
+    </div>
+
+    <p class="form-msg" role="alert"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn danger ghost" id="taskDelete" hidden>削除</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" data-close>キャンセル</button>
+      <button type="submit" class="btn primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===================== ダイアログ：今日の記録 ===================== -->
+<dialog id="logDialog" class="dlg">
+  <form method="dialog" id="logForm" novalidate>
+    <h2>今日やったことを記録</h2>
+    <p class="dlg-sub" id="logTaskTitle"></p>
+    <input type="hidden" name="taskId">
+    <label class="field">日付
+      <input type="date" name="date" required>
+    </label>
+    <label class="field">やったこと
+      <textarea name="text" rows="3" maxlength="500" required placeholder="例：構成案を作って佐藤さんに送った"></textarea>
+    </label>
+    <label class="field">次にやること（更新）
+      <textarea name="nextAction" rows="2" maxlength="300"></textarea>
+    </label>
+    <p class="form-msg" role="alert"></p>
+    <div class="dlg-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" data-close>キャンセル</button>
+      <button type="submit" class="btn primary">記録する（+10 XP）</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===================== ダイアログ：設定 ===================== -->
+<dialog id="settingsDialog" class="dlg">
+  <form method="dialog" id="settingsForm" novalidate>
+    <h2>設定</h2>
+    <label class="field">GASウェブアプリのURL
+      <input type="url" name="gasUrl" placeholder="https://script.google.com/macros/s/…/exec" spellcheck="false">
+    </label>
+    <p class="hint">空欄にすると config.js の値を使います。</p>
+    <div class="row-btns">
+      <button type="button" class="btn ghost" id="btnPing">接続を確認</button>
+      <span id="pingResult" class="hint"></span>
+    </div>
+
+    <fieldset class="toggles">
+      <legend>演出</legend>
+      <label><input type="checkbox" name="voice"> 実況を音声で読み上げる</label>
+      <label><input type="checkbox" name="autoNarrate"> 着陸（完了）したら実況する</label>
+      <label><input type="checkbox" name="bg"> 背景に地球の映像を流す</label>
+    </fieldset>
+
+    <div class="backup" id="backupBox">
+      <button type="button" class="btn ghost" id="btnBackup">Googleドライブにバックアップ</button>
+      <span id="backupResult" class="hint"></span>
+    </div>
+
+    <p class="form-msg" role="alert"></p>
+    <div class="dlg-actions">
+      <span class="app-version hint"></span>
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" data-close>閉じる</button>
+      <button type="submit" class="btn primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===================== ダイアログ：使い方 ===================== -->
+<dialog id="helpDialog" class="dlg wide">
+  <form method="dialog">
+    <h2>ボール管制塔の使い方</h2>
+    <p class="dlg-sub">抱えている用事を「便」として案内板に並べ、締め切りと返事待ちを見張ります。</p>
+    <ol class="steps">
+      <li><b>ミッションを登録</b>「＋ ミッションを登録」から、名前・締め切り・次にやることを入れます。案内板に便として並びます。</li>
+      <li><b>ボールの所在を決める</b>相手の返事を待っているなら「相手」を選び、名前と回答期日を入れます。期日を過ぎると「回答遅延」と表示され、催促メールの下書きを開けます。</li>
+      <li><b>今日やったことを記録</b>便の「記録」から書くと +10 XP。搭乗待ちの便は自動で飛行中になります。</li>
+      <li><b>着陸させる</b>終わったら「着陸」。+50 XP、締め切りに間に合えばさらに +30 XP と着陸映像。</li>
+      <li><b>実況を聞く</b>上の「管制塔の実況を聞く」で、AI管制官がいまの状況を読み上げます。</li>
+    </ol>
+    <h3>案内板の表示</h3>
+    <dl class="legend">
+      <div><dt class="st-wait">搭乗待ち</dt><dd>未着手</dd></div>
+      <div><dt class="st-fly">飛行中</dt><dd>進行中</dd></div>
+      <div><dt class="st-hold">待機旋回</dt><dd>保留</dd></div>
+      <div><dt class="st-final">最終案内</dt><dd>締め切りまで48時間以内</dd></div>
+      <div><dt class="st-late">遅延</dt><dd>締め切りを過ぎた</dd></div>
+      <div><dt class="st-done">着陸</dt><dd>完了</dd></div>
+    </dl>
+    <h3>階級</h3>
+    <p class="hint">XPがたまると、訓練生 → 副操縦士 → 機長 → 編隊長 → 管制官 → 宇宙管制官 → 銀河航路長 と昇進します。</p>
+    <div class="dlg-actions">
+      <span class="spacer"></span>
+      <button type="submit" class="btn primary">はじめる</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
