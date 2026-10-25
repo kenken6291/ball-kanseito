@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔 — style.css v1.0.0
+   ボール管制塔 — style.css v1.1.0
    主役は「発着案内板」。案内板は実物同様つねに紺の筐体＋琥珀のドット文字、
    まわりの紙面はライト／ダークに追従する。
    ========================================================= */
@@ -155,7 +155,7 @@ body.has-bg .bg-veil { background: var(--veil); }
 .auth-foot { display: flex; justify-content: space-between; align-items: center; font-size: .85rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
 
 /* ---------- アプリ全体 ---------- */
-.app { max-width: 1180px; margin: 0 auto; padding: 12px 16px 32px; display: grid; gap: 18px; }
+.app { max-width: 1180px; margin: 0 auto; padding: 12px 16px 32px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 
 .topbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 6px 0; }
 .top-actions { display: flex; gap: 8px; margin-left: auto; align-items: center; }
@@ -299,7 +299,7 @@ body.has-bg .bg-veil { background: var(--veil); }
 .side.them .ball-list li::before { background: transparent; border: 2px solid var(--sky); }
 .ball-list b { display: block; overflow-wrap: anywhere; }
 .ball-list small { color: var(--muted); display: block; }
-.ball-list li.overdue small { color: var(--signal); font-weight: 700; }
+.ball-list li.overdue > small { color: var(--signal); font-weight: 700; }
 .ball-list a { color: inherit; font-weight: 700; font-size: .85rem; }
 .ball-list .empty { padding-left: 0; color: var(--muted); }
 .ball-list .empty::before { display: none; }
@@ -365,6 +365,7 @@ body.has-bg .bg-veil { background: var(--veil); }
 .dlg h3 { font-size: 1rem; margin-top: 4px; }
 .dlg-sub { margin: -6px 0 0; color: var(--muted); font-size: .92rem; }
 .dlg-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dlg form > .dlg-actions { position: sticky; bottom: -18px; z-index: 2; background: var(--surface); margin: 0 -20px -18px; padding: 12px 20px 18px; border-top: 1px solid var(--line); }
 .spacer { flex: 1; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ball-pick, .toggles { border: 1.5px solid var(--line); border-radius: var(--r-m); padding: 10px 14px; display: flex; gap: 18px; flex-wrap: wrap; margin: 0; }
@@ -427,12 +428,13 @@ body.has-bg .bg-veil { background: var(--veil); }
   .topbar { gap: 10px; }
   .top-actions { margin-left: 0; width: 100%; }
   .radio-btn { flex: 1; }
-  .rank { min-width: 0; max-width: none; }
+  .rank { min-width: 0; max-width: none; flex-basis: 100%; order: 3; }
+  .xp-text { font-size: .8rem; }
   .board { padding: 14px 10px 16px; border-radius: var(--r-m); }
   .board-tools .btn.amber { width: 100%; }
   .board-cols { display: none; }
   .row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
     grid-template-areas:
       "flight status"
       "title title"
@@ -444,13 +446,105 @@ body.has-bg .bg-veil { background: var(--veil); }
   .c-status { grid-area: status; justify-self: end; }
   .c-title { grid-area: title; }
   .c-deadline { grid-area: deadline; }
-  .c-ball { grid-area: ball; grid-column: auto; justify-self: end; text-align: right; }
-  .c-act { grid-area: act; grid-column: auto; justify-content: stretch; }
+  .c-ball { grid-area: ball; justify-self: end; text-align: right; }
+  .ball-links { justify-content: flex-end; }
+  .c-act { grid-area: act; justify-content: stretch; }
   .c-act button { flex: 1; min-height: 42px; }
   .court-field { grid-template-columns: 1fr; }
   .net { height: 4px; background: repeating-linear-gradient(90deg, var(--line) 0 6px, transparent 6px 10px); }
   .today-stats { grid-template-columns: repeat(2, 1fr); }
   .grid2 { grid-template-columns: 1fr; }
+}
+
+
+/* =========================================================
+   v1.1 返事待ちの複数人・確認先URL
+   ========================================================= */
+.btn.small { min-height: 38px; padding: .3em .8em; font-size: .88rem; }
+
+/* 案内板のボール欄 */
+.c-ball.back { color: var(--green); }
+.c-ball.back .dot { background: var(--green); }
+.ball-links { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.chip {
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0 .7em;
+  border-radius: 99px; font-size: .78rem; font-weight: 700; text-decoration: none;
+  border: 1.5px solid var(--line); color: var(--ink); background: var(--surface);
+}
+.chip.dark { border-color: #ffffff38; color: var(--board-ink); background: transparent; }
+.chip:hover { border-color: currentColor; }
+
+/* ボールの所在：返事待ちグループ */
+.people { font-size: .85rem; color: var(--sky); font-weight: 700; margin-left: .3em; }
+.ball-list li.wgroup { padding: 10px 12px; border: 1.5px solid var(--line); border-radius: var(--r-m); display: grid; gap: 6px; }
+.ball-list li.wgroup::before { display: none; }
+.ball-list li.wgroup.has-overdue { border-color: color-mix(in srgb, var(--signal) 55%, var(--line)); }
+.wg-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.wg-head b { overflow-wrap: anywhere; }
+.wg-count { font-size: .82rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.meter { display: block; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--sky); transition: width .5s ease; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.wt-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ball-list .wt-list li { padding-left: 0; display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.ball-list .wt-list li::before { display: none; }
+.wt label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; min-height: 36px; padding: 4px 0; flex: 1; min-width: 0; }
+.wt input { width: 20px; height: 20px; margin-top: 2px; flex: none; accent-color: var(--sky); }
+.wt label span { min-width: 0; }
+.ball-list .wt b { display: inline; margin-right: .5em; }
+.ball-list .wt small { display: inline; margin-right: .5em; }
+.ball-list .wt.overdue small.due { color: var(--signal); font-weight: 700; }
+.wt.is-replied b { text-decoration: line-through; color: var(--muted); }
+.wt a { white-space: nowrap; }
+.more summary { cursor: pointer; font-size: .85rem; color: var(--muted); padding: 4px 0; min-height: 32px; }
+.bulk-chase { justify-self: start; font-size: .85rem; }
+
+/* 編集フォーム */
+.wait-fields { gap: 14px; }
+.wait-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.wait-fields h3 { font-size: .95rem; }
+.wait-sum { margin: 0; font-size: .85rem; color: var(--muted); }
+.waiter-list, .link-edit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 46vh; overflow-y: auto; }
+.waiter-list .empty { font-size: .88rem; color: var(--muted); }
+.waiter-row {
+  display: grid; gap: 6px; align-items: center;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.4fr) 9.6em auto 36px;
+}
+.waiter-row input[type="text"], .waiter-row input[type="date"], .link-row input {
+  width: 100%; min-height: 40px; padding: .4em .55em; font-size: .95rem;
+  border: 1.5px solid var(--line); border-radius: var(--r-s); background: var(--surface); color: var(--ink);
+}
+.waiter-row .replied { display: flex; align-items: center; gap: .3em; font-size: .82rem; white-space: nowrap; cursor: pointer; }
+.waiter-row .replied input { width: 18px; height: 18px; accent-color: var(--sky); }
+.waiter-row.is-replied input[data-k="name"] { text-decoration: line-through; color: var(--muted); }
+.waiter-row .del, .link-row .del {
+  width: 36px; height: 36px; border-radius: 50%; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 1.1rem;
+}
+.wait-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.inline-field { display: flex; align-items: center; gap: 6px; font-size: .85rem; font-weight: 700; color: var(--muted); }
+.inline-field input { min-height: 38px; padding: .3em .5em; border: 1.5px solid var(--line); border-radius: var(--r-s); background: var(--surface); color: var(--ink); }
+.bulk-box { display: grid; gap: 8px; padding: 10px; border: 1.5px dashed var(--line); border-radius: var(--r-m); background: var(--surface); }
+.bulk-box textarea { width: 100%; padding: .5em .7em; border: 1.5px solid var(--line); border-radius: var(--r-s); background: var(--surface); color: var(--ink); font-weight: 400; line-height: 1.6; }
+.links-block { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.links-block .btn { justify-self: start; }
+.link-row { display: grid; grid-template-columns: minmax(0, 11em) minmax(0, 1fr) auto 36px; gap: 6px; align-items: center; }
+.link-row .open { font-weight: 700; font-size: .88rem; color: inherit; padding: 0 .3em; }
+
+@media (max-width: 640px) {
+  .waiter-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px;
+    padding: 8px; border: 1.5px solid var(--line); border-radius: var(--r-m); background: var(--surface);
+  }
+  .waiter-row input[data-k="name"] { grid-column: 1 / 3; }
+  .waiter-row .del { grid-column: 3; grid-row: 1; }
+  .waiter-row input[data-k="dept"] { grid-column: 1 / 2; }
+  .waiter-row input[data-k="contact"] { grid-column: 2 / 4; }
+  .waiter-row input[data-k="due"] { grid-column: 1 / 2; }
+  .waiter-row .replied { grid-column: 2 / 4; }
+  .waiter-list { max-height: none; }
+  .link-row { grid-template-columns: minmax(0, 1fr) auto 36px; }
+  .link-row input[data-k="url"] { grid-column: 1 / 4; grid-row: 2; }
+  .wait-tools .spacer { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

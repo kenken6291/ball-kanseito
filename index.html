@@ -149,7 +149,7 @@
         <div class="net" aria-hidden="true"></div>
         <div class="side them">
           <h3>相手の手元</h3>
-          <p class="count"><strong id="ballThemCount">0</strong>球</p>
+          <p class="count"><strong id="ballThemCount">0</strong>球 <span id="ballThemPeople" class="people"></span></p>
           <ul id="ballThem" class="ball-list"></ul>
         </div>
       </div>
@@ -196,7 +196,7 @@
 </div>
 
 <!-- ===================== ダイアログ：ミッション ===================== -->
-<dialog id="taskDialog" class="dlg">
+<dialog id="taskDialog" class="dlg wide">
   <form method="dialog" id="taskForm" novalidate>
     <h2 id="taskDialogTitle">ミッションを登録</h2>
     <input type="hidden" name="taskId">
@@ -230,21 +230,42 @@
       <label><input type="radio" name="ballHolder" value="other"> 相手（返事待ち）</label>
     </fieldset>
     <div class="wait-fields" hidden>
-      <div class="grid2">
-        <label class="field">相手の名前
-          <input type="text" name="waitName" maxlength="40" placeholder="例：佐藤さん">
-        </label>
-        <label class="field">所属・部署
-          <input type="text" name="waitDept" maxlength="40" placeholder="例：自治会 広報部">
-        </label>
+      <div class="wait-head">
+        <h3>返事を待っている相手</h3>
+        <p class="wait-sum" id="waitSummary"></p>
       </div>
-      <div class="grid2">
-        <label class="field">連絡先（メールか電話）
-          <input type="text" name="waitContact" maxlength="100" placeholder="例：sato@example.com">
+
+      <ul id="waiterList" class="waiter-list"></ul>
+
+      <div class="wait-tools">
+        <button type="button" class="btn ghost small" id="btnAddWaiter">＋ 1人追加</button>
+        <button type="button" class="btn ghost small" id="btnBulkToggle" aria-expanded="false" aria-controls="bulkBox">まとめて追加</button>
+        <span class="spacer"></span>
+        <label class="inline-field">全員の期日
+          <input type="date" id="bulkDue">
         </label>
-        <label class="field">回答をもらう期日
-          <input type="date" name="ballDue">
+        <button type="button" class="btn ghost small" id="btnApplyDue">反映</button>
+      </div>
+
+      <div id="bulkBox" class="bulk-box" hidden>
+        <label class="field">1行に1人ずつ入力（名前, 所属, 連絡先 の順。所属・連絡先は省略可）
+          <textarea id="bulkText" rows="5" placeholder="佐藤一郎, 3年2組, sato@example.com&#10;鈴木花子, 3年1組&#10;田中"></textarea>
         </label>
+        <div class="row-btns">
+          <button type="button" class="btn primary small" id="btnBulkAdd">一覧に追加</button>
+          <span class="hint">名簿をコピーして貼り付けても読み込めます（カンマ・タブ区切り）。</span>
+        </div>
+      </div>
+
+      <div class="links-block">
+        <h3>返事の確認先</h3>
+        <p class="hint">調整さん・LINE・Googleフォームなど、回答を確かめに行く場所のURL。</p>
+        <ul id="linkList" class="link-edit-list"></ul>
+        <button type="button" class="btn ghost small" id="btnAddLink">＋ 確認先を追加</button>
+        <datalist id="linkLabels">
+          <option value="調整さん"><option value="LINE"><option value="LINEオープンチャット">
+          <option value="Googleフォーム"><option value="伝助"><option value="メール"><option value="Slack"><option value="Teams">
+        </datalist>
       </div>
     </div>
 
@@ -324,7 +345,8 @@
     <p class="dlg-sub">抱えている用事を「便」として案内板に並べ、締め切りと返事待ちを見張ります。</p>
     <ol class="steps">
       <li><b>ミッションを登録</b>「＋ ミッションを登録」から、名前・締め切り・次にやることを入れます。案内板に便として並びます。</li>
-      <li><b>ボールの所在を決める</b>相手の返事を待っているなら「相手」を選び、名前と回答期日を入れます。期日を過ぎると「回答遅延」と表示され、催促メールの下書きを開けます。</li>
+      <li><b>ボールの所在を決める</b>返事待ちなら「相手」を選び、待っている人を登録します。何人でも登録でき、「まとめて追加」で名簿を貼り付けることもできます。調整さんやLINEなど、返事を確かめる場所のURLも登録できます。</li>
+      <li><b>回答をチェック</b>返事が来た人は「ボールの所在」で「回答済み」にチェック。全員そろうとボールが自分に戻ります。期日を過ぎた未回答の人には、催促メールの下書きをまとめて開けます。</li>
       <li><b>今日やったことを記録</b>便の「記録」から書くと +10 XP。搭乗待ちの便は自動で飛行中になります。</li>
       <li><b>着陸させる</b>終わったら「着陸」。+50 XP、締め切りに間に合えばさらに +30 XP と着陸映像。</li>
       <li><b>実況を聞く</b>上の「管制塔の実況を聞く」で、AI管制官がいまの状況を読み上げます。</li>

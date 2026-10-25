@@ -4,7 +4,7 @@
  */
 window.APP_CONFIG = {
   APP_NAME: 'ボール管制塔',
-  VERSION: 'v1.0.0',
+  VERSION: 'v1.1.0',
 
   // GASウェブアプリのURL（https://script.google.com/macros/s/.../exec）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwRtwC8UG6W3MoMJggg0iBrUm0cefnffG9Ynyu-wrUjsbzturdanPJ-zlJwZJvkpqdvRQ/exec',

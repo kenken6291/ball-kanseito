@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔 — app.js v1.0.0
+   ボール管制塔 — app.js v1.1.0（返事待ちの複数人対応・確認先URL）
    認証 / 案内板描画 / ボール所在 / 本日の記録 / XP・階級
    実況（Gemini + TTS 再生）/ Google Earth Studio 映像演出
    ========================================================= */
@@ -26,7 +26,8 @@
     filter: 'all',
     animate: true,
     lastNarration: null,
-    finalCallShown: false
+    finalCallShown: false,
+    form: { waiters: [], links: [] }
   };
 
   const STATUS = {
@@ -72,6 +73,27 @@
   const gasUrl = () => (store(LS.gas) || CFG.GAS_URL || '').trim();
   const findTask = id => state.tasks.find(t => t.taskId === id);
   const isOpen = t => t.status !== '完了';
+  const waitersOf = t => (t.ballHolder === 'other' && Array.isArray(t.waiters)) ? t.waiters : [];
+  const pendingOf = t => waitersOf(t).filter(w => !w.replied);
+  const linksOf = t => Array.isArray(t.links) ? t.links : [];
+  /** ボールが相手側にあるか：未回答の人が1人でもいれば相手側。全員回答済みなら自分に戻る */
+  const ballIsThem = t => isOpen(t) && pendingOf(t).length > 0;
+  const isEmail = c => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(c || '').trim());
+  const newId = () => 'w' + Math.random().toString(36).slice(2, 10);
+  function guessLinkLabel(url) {
+    const u = String(url).toLowerCase();
+    if (u.includes('chouseisan.com')) return '調整さん';
+    if (u.includes('line.me')) return 'LINE';
+    if (u.includes('forms.gle') || u.includes('docs.google.com/forms')) return 'Googleフォーム';
+    if (u.includes('docs.google.com/spreadsheets')) return 'スプレッドシート';
+    if (u.includes('densuke.biz')) return '伝助';
+    if (u.includes('slack.com')) return 'Slack';
+    if (u.includes('teams.microsoft.com')) return 'Teams';
+    if (u.includes('facebook.com')) return 'Facebook';
+    return 'Webページ';
+  }
+  const linkChips = (t, cls) => linksOf(t).map(l =>
+    '<a class="' + (cls || 'chip') + '" href="' + esc(l.url) + '" target="_blank" rel="noopener">' + esc(l.label || guessLinkLabel(l.url)) + '</a>').join('');
 
   async function api(action, data = {}) {
     const url = gasUrl();
@@ -328,8 +350,8 @@
     return state.tasks.filter(t => {
       if (f === 'done') return !isOpen(t);
       if (!isOpen(t)) return false;
-      if (f === 'mine') return t.ballHolder !== 'other';
-      if (f === 'them') return t.ballHolder === 'other';
+      if (f === 'mine') return !ballIsThem(t);
+      if (f === 'them') return ballIsThem(t);
       return true;
     }).sort(compareTasks);
   }
@@ -351,15 +373,9 @@
     list.innerHTML = tasks.map((t, idx) => {
       const st = boardStatus(t);
       const h = hoursLeft(t.deadline);
-      const them = t.ballHolder === 'other';
-      const ballOver = them && t.ballDue && t.ballDue < today && isOpen(t);
       const fc = anim ? ' anim' : '';
       const delay = idx * 70;
-
-      const ballHtml = them
-        ? '<span class="c-ball them' + (ballOver ? ' overdue' : '') + '"><span class="dot"></span><span>' + esc(t.waitName) + 'の返事待ち'
-          + '<small>' + (t.ballDue ? (ballOver ? '回答遅延 ' : '回答期日 ') + esc(fmtD(t.ballDue)) : '期日未設定') + (t.waitDept ? '／' + esc(t.waitDept) : '') + '</small></span></span>'
-        : '<span class="c-ball me"><span class="dot"></span><span>自分<small>' + (isOpen(t) ? 'ボールは手元' : '') + '</small></span></span>';
+      const ballHtml = ballCell(t, today);
 
       const acts = isOpen(t)
         ? '<button type="button" data-act="log">記録</button><button type="button" data-act="edit">編集</button><button type="button" data-act="done">着陸</button>'
@@ -393,45 +409,132 @@
     state.animate = false;
   }
 
-  /* --- ボールの所在 --- */
-  function chaseLink(t) {
-    const c = String(t.waitContact || '').trim();
-    if (/^[^\s@]+@[^\s@]+$/.test(c)) {
-      const subject = '【ご確認のお願い】' + t.title;
-      const body = (t.waitName || '') + ' 様\n\nお世話になっております。\n「' + t.title + '」の件、その後のご状況はいかがでしょうか。\nお手すきの際にご連絡いただけますと幸いです。\n\n' + (state.user ? state.user.nickname : '');
-      return 'mailto:' + c + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+  function ballCell(t, today) {
+    const all = waitersOf(t);
+    const pen = pendingOf(t);
+    const chips = linksOf(t).length ? '<span class="ball-links">' + linkChips(t, 'chip dark') + '</span>' : '';
+    if (!isOpen(t) || !all.length) {
+      return '<span class="c-ball me"><span class="dot"></span><span>自分<small>' + (isOpen(t) ? 'ボールは手元' : '') + '</small>' + chips + '</span></span>';
     }
+    if (!pen.length) {
+      return '<span class="c-ball me back"><span class="dot"></span><span>全員回答済み<small>' + all.length + '人の返事がそろいました</small>' + chips + '</span></span>';
+    }
+    const over = pen.filter(w => w.due && w.due < today);
+    const dues = pen.map(w => w.due).filter(Boolean).sort();
+    const who = pen.length === 1 ? pen[0].name + 'の返事待ち' : pen[0].name + 'ほか' + (pen.length - 1) + '人の返事待ち';
+    const sub = [];
+    if (all.length > 1) sub.push('回答 ' + (all.length - pen.length) + '/' + all.length + '人');
+    sub.push(over.length ? '期日超過 ' + over.length + '人' : (dues.length ? '期日 ' + fmtD(dues[0]) : '期日未設定'));
+    return '<span class="c-ball them' + (over.length ? ' overdue' : '') + '"><span class="dot"></span><span>' + esc(who)
+      + '<small>' + esc(sub.join('／')) + '</small>' + chips + '</span></span>';
+  }
+
+  /* --- ボールの所在 --- */
+  function chaseBody(title, name) {
+    return (name ? name + ' 様' : '皆さま') + '\n\nお世話になっております。\n「' + title + '」の件、お返事の状況はいかがでしょうか。\nお手すきの際にご回答いただけますと幸いです。\n\n' + (state.user ? state.user.nickname : '');
+  }
+
+  /** 1人への連絡リンク（メール／電話／URL） */
+  function chaseLink(t, w) {
+    const c = String(w.contact || '').trim();
+    if (isEmail(c)) {
+      return { href: 'mailto:' + c + '?subject=' + encodeURIComponent('【ご確認のお願い】' + t.title) + '&body=' + encodeURIComponent(chaseBody(t.title, w.name)), label: '催促メール' };
+    }
+    if (/^https?:\/\//i.test(c)) return { href: c, label: '連絡する', ext: true };
     const tel = c.replace(/[^\d+]/g, '');
-    return tel.length >= 10 ? 'tel:' + tel : '';
+    return tel.length >= 10 ? { href: 'tel:' + tel, label: '電話' } : null;
+  }
+
+  /** 複数人へのまとめ催促（BCC） */
+  function bulkChaseLink(t, list) {
+    const mails = list.map(w => String(w.contact || '').trim()).filter(isEmail);
+    if (!mails.length) return '';
+    return 'mailto:?bcc=' + mails.join(',') + '&subject=' + encodeURIComponent('【ご確認のお願い】' + t.title) + '&body=' + encodeURIComponent(chaseBody(t.title, ''));
+  }
+
+  function waiterItem(t, w, today) {
+    const over = !w.replied && w.due && w.due < today;
+    const link = !w.replied ? chaseLink(t, w) : null;
+    return '<li class="wt' + (over ? ' overdue' : '') + (w.replied ? ' is-replied' : '') + '">'
+      + '<label><input type="checkbox" data-task="' + esc(t.taskId) + '" data-w="' + esc(w.id) + '"' + (w.replied ? ' checked' : '') + '>'
+      + '<span><b>' + esc(w.name) + '</b>' + (w.dept ? '<small>' + esc(w.dept) + '</small>' : '')
+      + (!w.replied ? '<small class="due">' + (w.due ? (over ? '期日超過 ' : '期日 ') + esc(fmtD(w.due)) : '期日なし') + '</small>' : '')
+      + '</span></label>'
+      + (link && (over || !isEmail(w.contact)) ? '<a href="' + esc(link.href) + '"' + (link.ext ? ' target="_blank" rel="noopener"' : '') + '>' + esc(link.label) + '</a>' : '')
+      + '</li>';
+  }
+
+  function waiterGroup(t, today) {
+    const all = waitersOf(t);
+    const pen = pendingOf(t).slice().sort((a, b) => String(a.due || '9999').localeCompare(String(b.due || '9999')));
+    const done = all.filter(w => w.replied);
+    const over = pen.filter(w => w.due && w.due < today);
+    const pct = Math.round((done.length / all.length) * 100);
+    const SHOW = 6;
+    const bulk = bulkChaseLink(t, over.length ? over : pen);
+    const bulkLabel = over.length ? '期日超過の' + over.length + '人にまとめて催促' : '未回答の' + pen.length + '人にまとめて催促';
+
+    return '<li class="wgroup' + (over.length ? ' has-overdue' : '') + '">'
+      + '<div class="wg-head"><b>' + esc(t.title) + '</b><span class="wg-count">回答 ' + done.length + '/' + all.length + '人</span></div>'
+      + '<span class="meter" aria-hidden="true"><i style="width:' + pct + '%"></i></span>'
+      + (linksOf(t).length ? '<div class="chips">' + linkChips(t) + '</div>' : '')
+      + '<ul class="wt-list">' + pen.slice(0, SHOW).map(w => waiterItem(t, w, today)).join('') + '</ul>'
+      + (pen.length > SHOW ? '<details class="more"><summary>未回答のほか' + (pen.length - SHOW) + '人</summary><ul class="wt-list">' + pen.slice(SHOW).map(w => waiterItem(t, w, today)).join('') + '</ul></details>' : '')
+      + (done.length ? '<details class="more"><summary>回答済み ' + done.length + '人</summary><ul class="wt-list">' + done.map(w => waiterItem(t, w, today)).join('') + '</ul></details>' : '')
+      + (bulk && pen.length > 1 ? '<a class="bulk-chase" href="' + esc(bulk) + '">' + esc(bulkLabel) + '</a>' : '')
+      + '</li>';
   }
 
   function renderCourt() {
     const open = state.tasks.filter(isOpen);
-    const mine = open.filter(t => t.ballHolder !== 'other').sort(compareTasks);
-    const them = open.filter(t => t.ballHolder === 'other')
-      .sort((a, b) => String(a.ballDue || '9999').localeCompare(String(b.ballDue || '9999')));
+    const mine = open.filter(t => !ballIsThem(t)).sort(compareTasks);
+    const them = open.filter(ballIsThem).sort((a, b) => {
+      const d = t => pendingOf(t).map(w => w.due).filter(Boolean).sort()[0] || '9999';
+      return d(a).localeCompare(d(b));
+    });
     const today = todayStr();
+    const people = them.reduce((n, t) => n + pendingOf(t).length, 0);
 
     $('#ballMineCount').textContent = mine.length;
     $('#ballThemCount').textContent = them.length;
+    $('#ballThemPeople').textContent = people ? '未回答 ' + people + '人' : '';
 
     $('#ballMine').innerHTML = mine.length
-      ? mine.slice(0, 5).map(t => '<li><b>' + esc(t.title) + '</b><small>'
-          + esc(t.nextAction ? '次：' + t.nextAction : fmtLeft(hoursLeft(t.deadline))) + '</small></li>').join('')
+      ? mine.slice(0, 5).map(t => {
+          const back = waitersOf(t).length && !pendingOf(t).length;
+          return '<li><b>' + esc(t.title) + '</b><small>'
+            + esc(back ? '全員の返事がそろいました' : (t.nextAction ? '次：' + t.nextAction : fmtLeft(hoursLeft(t.deadline)))) + '</small></li>';
+        }).join('')
         + (mine.length > 5 ? '<li class="empty">ほか ' + (mine.length - 5) + '件</li>' : '')
       : '<li class="empty">手元のボールはゼロ。相手の返事を待つあいだに一息どうぞ。</li>';
 
     $('#ballThem').innerHTML = them.length
-      ? them.map(t => {
-          const over = t.ballDue && t.ballDue < today;
-          const link = chaseLink(t);
-          return '<li class="' + (over ? 'overdue' : '') + '"><b>' + esc(t.waitName) + (t.waitDept ? '（' + esc(t.waitDept) + '）' : '') + '</b>'
-            + esc(t.title)
-            + '<small>' + (t.ballDue ? (over ? '回答期日を過ぎています（' + esc(fmtD(t.ballDue)) + '）' : '回答期日 ' + esc(fmtD(t.ballDue))) : '回答期日は未設定') + '</small>'
-            + (link && over ? '<a href="' + esc(link) + '">' + (link.indexOf('tel:') === 0 ? '電話で確認する' : '催促メールの下書きを開く') + '</a>' : '')
-            + '</li>';
-        }).join('')
+      ? them.map(t => waiterGroup(t, today)).join('')
       : '<li class="empty">相手に預けているボールはありません。</li>';
+  }
+
+  /** ボールの所在から「回答済み」をその場で切り替え */
+  async function toggleReplied(taskId, wid, checked) {
+    const t = findTask(taskId);
+    if (!t) return;
+    const prev = t.waiters;
+    const waiters = t.waiters.map(w => (w.id === wid ? Object.assign({}, w, { replied: checked }) : w));
+    const wasThem = ballIsThem(t);
+    t.waiters = waiters;
+    renderAll();
+    try {
+      const r = await api('saveTask', { task: Object.assign({}, t, { waiters: waiters }) });
+      replaceTask(r.task);
+      if (wasThem && !ballIsThem(r.task)) {
+        state.animate = true;
+        toast('「' + r.task.title + '」は全員の返事がそろいました。ボールが戻ってきました。');
+      }
+      renderAll();
+    } catch (err) {
+      t.waiters = prev;
+      renderAll();
+      toast(err.message);
+    }
   }
 
   /* --- 本日の記録 --- */
@@ -507,6 +610,62 @@
     const f = $('#taskForm');
     const other = f.elements.ballHolder.value === 'other';
     $('.wait-fields', f).hidden = !other;
+    if (other && !state.form.waiters.length) {
+      state.form.waiters.push({ id: newId(), name: '', dept: '', contact: '', due: '', replied: false });
+      renderWaiterRows();
+      const first = $('#waiterList input[data-k="name"]');
+      if (first) first.focus();
+    }
+  }
+
+  function renderWaiterRows() {
+    const ws = state.form.waiters;
+    $('#waiterList').innerHTML = ws.length
+      ? ws.map((w, i) => '<li class="waiter-row' + (w.replied ? ' is-replied' : '') + '" data-i="' + i + '">'
+          + '<input type="text" data-k="name" maxlength="40" placeholder="名前" aria-label="名前" value="' + esc(w.name) + '">'
+          + '<input type="text" data-k="dept" maxlength="40" placeholder="所属・部署" aria-label="所属・部署" value="' + esc(w.dept) + '">'
+          + '<input type="text" data-k="contact" maxlength="200" placeholder="メール・電話・URL" aria-label="連絡先" value="' + esc(w.contact) + '">'
+          + '<input type="date" data-k="due" aria-label="回答期日" value="' + esc(w.due) + '">'
+          + '<label class="replied"><input type="checkbox" data-k="replied"' + (w.replied ? ' checked' : '') + '>回答済み</label>'
+          + '<button type="button" class="del" data-del aria-label="この人を外す">×</button>'
+          + '</li>').join('')
+      : '<li class="empty">まだ相手がいません。「＋ 1人追加」か「まとめて追加」で登録します。</li>';
+    updateWaitSummary();
+  }
+
+  function updateWaitSummary() {
+    const ws = state.form.waiters.filter(w => w.name.trim());
+    const done = ws.filter(w => w.replied).length;
+    $('#waitSummary').textContent = ws.length ? ws.length + '人中 ' + done + '人が回答済み' : '';
+  }
+
+  function renderLinkRows() {
+    const ls = state.form.links;
+    $('#linkList').innerHTML = ls.map((l, i) => '<li class="link-row" data-i="' + i + '">'
+      + '<input type="text" data-k="label" list="linkLabels" maxlength="30" placeholder="名前（例：調整さん）" aria-label="確認先の名前" value="' + esc(l.label) + '">'
+      + '<input type="url" data-k="url" maxlength="500" placeholder="https://…" aria-label="確認先のURL" value="' + esc(l.url) + '" spellcheck="false">'
+      + (l.url ? '<a class="open" href="' + esc(l.url) + '" target="_blank" rel="noopener">開く</a>' : '')
+      + '<button type="button" class="del" data-del aria-label="この確認先を外す">×</button>'
+      + '</li>').join('');
+  }
+
+  function bulkAddWaiters() {
+    const text = $('#bulkText').value;
+    const due = $('#bulkDue').value;
+    const existing = new Set(state.form.waiters.map(w => w.name.trim()));
+    let added = 0;
+    text.split(/\r?\n/).forEach(line => {
+      const parts = line.split(/\t|,|，|、/).map(x => x.trim());
+      const name = parts[0];
+      if (!name || existing.has(name)) return;
+      existing.add(name);
+      state.form.waiters.push({ id: newId(), name: name.slice(0, 40), dept: (parts[1] || '').slice(0, 40), contact: (parts[2] || '').slice(0, 200), due: due, replied: false });
+      added++;
+    });
+    state.form.waiters = state.form.waiters.filter(w => w.name.trim() || w.dept || w.contact);
+    renderWaiterRows();
+    $('#bulkText').value = '';
+    formMsg($('#taskForm'), added ? added + '人を追加しました。' : '追加できる名前がありませんでした（重複は除きます）。', !!added);
   }
 
   function openTaskDialog(t) {
@@ -517,10 +676,17 @@
     $('#taskDialogTitle').textContent = isNew ? 'ミッションを登録' : 'ミッションを編集';
     $('#taskDelete').hidden = isNew;
     const v = t || { status: '未着手', ballHolder: 'me' };
-    ['taskId', 'title', 'category', 'deadline', 'status', 'nextAction', 'waitName', 'waitDept', 'waitContact', 'ballDue']
-      .forEach(k => { if (f.elements[k]) f.elements[k].value = v[k] || (k === 'status' ? '未着手' : ''); });
+    ['taskId', 'title', 'category', 'deadline', 'status', 'nextAction']
+      .forEach(k => { f.elements[k].value = v[k] || (k === 'status' ? '未着手' : ''); });
     $$('input[name="ballHolder"]', f).forEach(r => { r.checked = r.value === (v.ballHolder === 'other' ? 'other' : 'me'); });
-    syncWaitFields();
+    state.form.waiters = (v.waiters || []).map(w => Object.assign({ dept: '', contact: '', due: '', replied: false }, w));
+    state.form.links = (v.links || []).map(l => Object.assign({}, l));
+    $('#bulkBox').hidden = true;
+    $('#btnBulkToggle').setAttribute('aria-expanded', 'false');
+    $('#bulkDue').value = '';
+    renderWaiterRows();
+    renderLinkRows();
+    $('.wait-fields', f).hidden = v.ballHolder !== 'other';
     $('#taskDialog').showModal();
     setTimeout(() => f.elements.title.focus(), 30);
   }
@@ -528,10 +694,91 @@
   function readTaskForm() {
     const f = $('#taskForm');
     const o = {};
-    ['taskId', 'title', 'category', 'deadline', 'status', 'nextAction', 'waitName', 'waitDept', 'waitContact', 'ballDue']
-      .forEach(k => { o[k] = f.elements[k].value.trim(); });
+    ['taskId', 'title', 'category', 'deadline', 'status', 'nextAction'].forEach(k => { o[k] = f.elements[k].value.trim(); });
     o.ballHolder = f.elements.ballHolder.value === 'other' ? 'other' : 'me';
+    o.waiters = state.form.waiters
+      .map(w => ({ id: w.id || newId(), name: w.name.trim(), dept: w.dept.trim(), contact: w.contact.trim(), due: w.due, replied: !!w.replied }))
+      .filter(w => w.name);
+    o.links = state.form.links
+      .map(l => ({ label: l.label.trim() || (l.url.trim() ? guessLinkLabel(l.url.trim()) : ''), url: l.url.trim() }))
+      .filter(l => l.url);
     return o;
+  }
+
+  function bindTaskForm() {
+    // 返事待ちの行：入力はその場で state に反映（再描画しないのでフォーカスが外れない）
+    $('#waiterList').addEventListener('input', e => {
+      const row = e.target.closest('.waiter-row');
+      if (!row) return;
+      const w = state.form.waiters[Number(row.dataset.i)];
+      const k = e.target.dataset.k;
+      if (k === 'replied') { w.replied = e.target.checked; row.classList.toggle('is-replied', w.replied); }
+      else w[k] = e.target.value;
+      updateWaitSummary();
+    });
+    // Enterで保存されないようにし、最後の行ならもう1人分の行を足す（連続入力用）
+    $('#waiterList').addEventListener('keydown', e => {
+      if (e.key !== 'Enter' || e.isComposing || e.target.tagName !== 'INPUT') return;
+      e.preventDefault();
+      const row = e.target.closest('.waiter-row');
+      if (row && Number(row.dataset.i) === state.form.waiters.length - 1 && e.target.value.trim()) $('#btnAddWaiter').click();
+    });
+    $('#linkList').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') e.preventDefault();
+    });
+    $('#waiterList').addEventListener('click', e => {
+      const b = e.target.closest('[data-del]');
+      if (!b) return;
+      state.form.waiters.splice(Number(b.closest('.waiter-row').dataset.i), 1);
+      renderWaiterRows();
+    });
+    $('#btnAddWaiter').addEventListener('click', () => {
+      state.form.waiters.push({ id: newId(), name: '', dept: '', contact: '', due: $('#bulkDue').value, replied: false });
+      renderWaiterRows();
+      const rows = $$('#waiterList .waiter-row input[data-k="name"]');
+      if (rows.length) rows[rows.length - 1].focus();
+    });
+    $('#btnBulkToggle').addEventListener('click', e => {
+      const box = $('#bulkBox');
+      box.hidden = !box.hidden;
+      e.currentTarget.setAttribute('aria-expanded', String(!box.hidden));
+      if (!box.hidden) $('#bulkText').focus();
+    });
+    $('#btnBulkAdd').addEventListener('click', bulkAddWaiters);
+    $('#btnApplyDue').addEventListener('click', () => {
+      const due = $('#bulkDue').value;
+      if (!due) { formMsg($('#taskForm'), '「全員の期日」に日付を入れてから「反映」を押してください。'); return; }
+      state.form.waiters.forEach(w => { if (!w.replied) w.due = due; });
+      renderWaiterRows();
+      formMsg($('#taskForm'), '未回答の全員に期日 ' + fmtD(due) + ' を設定しました。', true);
+    });
+
+    // 確認先URL
+    $('#linkList').addEventListener('input', e => {
+      const row = e.target.closest('.link-row');
+      if (!row) return;
+      state.form.links[Number(row.dataset.i)][e.target.dataset.k] = e.target.value;
+    });
+    $('#linkList').addEventListener('change', e => {
+      const row = e.target.closest('.link-row');
+      if (!row || e.target.dataset.k !== 'url') return;
+      const l = state.form.links[Number(row.dataset.i)];
+      if (l.url && !l.label) l.label = guessLinkLabel(l.url);
+      renderLinkRows();
+    });
+    $('#linkList').addEventListener('click', e => {
+      const b = e.target.closest('[data-del]');
+      if (!b) return;
+      state.form.links.splice(Number(b.closest('.link-row').dataset.i), 1);
+      renderLinkRows();
+    });
+    $('#btnAddLink').addEventListener('click', () => {
+      if (state.form.links.length >= 10) { formMsg($('#taskForm'), '確認先は10件までです。'); return; }
+      state.form.links.push({ label: '', url: '' });
+      renderLinkRows();
+      const rows = $$('#linkList input[data-k="url"]');
+      rows[rows.length - 1].focus();
+    });
   }
 
   function replaceTask(task) {
@@ -544,7 +791,9 @@
     const f = $('#taskForm');
     const data = readTaskForm();
     if (!data.title) { formMsg(f, 'ミッション名を入力してください。'); return; }
-    if (data.ballHolder === 'other' && !data.waitName) { formMsg(f, 'ボールを持っている相手の名前を入力してください。'); return; }
+    if (data.ballHolder === 'other' && !data.waiters.length) { formMsg(f, '返事を待っている相手を1人以上入力してください。'); return; }
+    const badUrl = data.links.find(l => !/^https?:\/\/\S+$/i.test(l.url));
+    if (badUrl) { formMsg(f, '確認先のURLは https:// で始まる形で入力してください：' + badUrl.url); return; }
     const before = findTask(data.taskId);
     const xpBefore = calcXP();
     setBusy(f, true);
@@ -863,6 +1112,13 @@
       state.animate = true;
       renderBoard();
     }));
+
+    $('#ballThem').addEventListener('change', e => {
+      const c = e.target.closest('input[type="checkbox"][data-w]');
+      if (c) toggleReplied(c.dataset.task, c.dataset.w, c.checked);
+    });
+
+    bindTaskForm();
 
     $('#todayLogs').addEventListener('click', e => {
       const b = e.target.closest('.del');

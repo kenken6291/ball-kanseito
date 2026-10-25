@@ -1,6 +1,6 @@
 /**
  * ボール管制塔（ball-kanseito）— GAS バックエンド
- * v1.0.0
+ * v1.1.0（返事待ちの複数人対応・確認先URL）
  *
  * 認証 / ミッション(タスク)CRUD / 実績ログ / Gemini実況 / Gemini TTS / Drive保存 / メール送信
  * フロントからは Content-Type: text/plain で JSON を POST する（CORSプリフライト回避）
@@ -9,12 +9,12 @@
  * ※コードを変更したら「デプロイを管理」→ 編集 → バージョン「新バージョン」で再デプロイ（URLはそのまま）
  */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const APP_NAME = 'ボール管制塔';
 
 const DEF = {
   USERS: { name: 'Users', headers: ['email', 'nickname', 'salt', 'hash', 'mustChange', 'failCount', 'lockedUntil', 'createdAt', 'lastLogin'] },
-  TASKS: { name: 'Tasks', headers: ['taskId', 'email', 'title', 'category', 'deadline', 'status', 'nextAction', 'ballHolder', 'waitName', 'waitDept', 'waitContact', 'ballDue', 'createdAt', 'updatedAt', 'completedAt'] },
+  TASKS: { name: 'Tasks', headers: ['taskId', 'email', 'title', 'category', 'deadline', 'status', 'nextAction', 'ballHolder', 'waitName', 'waitDept', 'waitContact', 'ballDue', 'createdAt', 'updatedAt', 'completedAt', 'waiters', 'links'] },
   LOGS: { name: 'Logs', headers: ['logId', 'taskId', 'email', 'date', 'text', 'createdAt'] },
   NARRATIONS: { name: 'Narrations', headers: ['id', 'email', 'type', 'text', 'audioFileId', 'createdAt'] }
 };
@@ -25,6 +25,8 @@ const MAX_FAIL = 5;               // 連続失敗でロック
 const LOCK_MIN = 15;              // ロック時間（分）
 const NARRATE_DAILY_LIMIT = 40;   // 1人1日あたりの実況生成上限
 const HASH_ROUNDS = 300;
+const MAX_WAITERS = 200;          // 1ミッションあたりの返事待ち人数の上限
+const MAX_LINKS = 10;             // 確認先URLの上限
 
 /* =========================================================
  * 初期セットアップ（エディタから1回だけ実行）
@@ -387,9 +389,15 @@ function buildContext_(type, tasks, logs, s, taskId) {
     if (t.category) parts.push('分類 ' + t.category);
     parts.push('締め切り ' + (t.deadline ? speakDT_(t.deadline) + '（' + leftText_(t.deadline, nowD) + '）' : 'なし'));
     parts.push('状況 ' + t.status);
-    if (t.ballHolder === 'other') {
-      parts.push('ボール：' + t.waitName + (t.waitDept ? '（' + t.waitDept + '）' : '') + 'の返事待ち'
-        + (t.ballDue ? '、回答期日 ' + speakDate_(t.ballDue) + (t.ballDue < today ? '（期日超過）' : '') : ''));
+    const pt = publicTask_(t);
+    const pending = pendingWaiters_(pt);
+    if (pt.ballHolder === 'other' && pt.waiters.length) {
+      const over = pending.filter(w => w.due && w.due < today);
+      const names = pending.slice(0, 5).map(w => w.name).join('、');
+      parts.push(pending.length
+        ? 'ボール：' + pt.waiters.length + '人に返事待ち、未回答' + pending.length + '人' + (over.length ? '（うち期日超過' + over.length + '人）' : '') + '、未回答の主な相手 ' + names + (pending.length > 5 ? 'ほか' : '')
+        : 'ボール：' + pt.waiters.length + '人全員から回答あり、ボールは自分に戻った');
+      if (pt.links.length) parts.push('返事の確認先 ' + pt.links.map(l => l.label).join('、'));
     } else {
       parts.push('ボール：自分');
     }
@@ -549,22 +557,74 @@ function cleanTask_(t) {
     status: STATUSES.indexOf(t.status) >= 0 ? t.status : '未着手',
     nextAction: s(t.nextAction).slice(0, 300),
     ballHolder: t.ballHolder === 'other' ? 'other' : 'me',
-    waitName: s(t.waitName).slice(0, 40),
-    waitDept: s(t.waitDept).slice(0, 40),
-    waitContact: s(t.waitContact).slice(0, 100),
-    ballDue: s(t.ballDue).slice(0, 10)
+    waitName: '', waitDept: '', waitContact: '', ballDue: ''   // v1.0の列（waitersへ移行済み）
   };
+
+  const waiters = (Array.isArray(t.waiters) ? t.waiters : []).map(w => ({
+    id: s(w.id).slice(0, 12) || 'w' + Utilities.getUuid().replace(/-/g, '').slice(0, 8),
+    name: s(w.name).slice(0, 40),
+    dept: s(w.dept).slice(0, 40),
+    contact: s(w.contact).slice(0, 200),
+    due: s(w.due).slice(0, 10),
+    replied: w.replied === true
+  })).filter(w => w.name);
+  if (waiters.length > MAX_WAITERS) throw appErr_('返事待ちの相手は' + MAX_WAITERS + '人までです。');
+  waiters.forEach(w => {
+    if (w.due && !/^\d{4}-\d{2}-\d{2}$/.test(w.due)) throw appErr_(w.name + 'さんの回答期日の形式が正しくありません。');
+  });
+
+  const links = (Array.isArray(t.links) ? t.links : []).map(l => ({
+    label: s(l.label).slice(0, 30),
+    url: s(l.url).slice(0, 500)
+  })).filter(l => l.url);
+  if (links.length > MAX_LINKS) throw appErr_('確認先のURLは' + MAX_LINKS + '件までです。');
+  links.forEach(l => {
+    if (!/^https?:\/\/[^\s]+$/i.test(l.url)) throw appErr_('確認先のURLは http:// または https:// で始まる形で入力してください：' + l.url);
+    if (!l.label) l.label = guessLinkLabel_(l.url);
+  });
+
+  o.waiters = JSON.stringify(waiters);
+  o.links = JSON.stringify(links);
   if (!o.title) throw appErr_('ミッション名を入力してください。');
   if (o.deadline && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(o.deadline)) throw appErr_('締め切りの日時の形式が正しくありません。');
-  if (o.ballDue && !/^\d{4}-\d{2}-\d{2}$/.test(o.ballDue)) throw appErr_('回答期日の形式が正しくありません。');
-  if (o.ballHolder === 'other' && !o.waitName) throw appErr_('ボールを持っている相手の名前を入力してください。');
+  if (o.ballHolder === 'other' && !waiters.length) throw appErr_('返事を待っている相手を1人以上入力してください。');
   return o;
 }
 
 function publicTask_(t) {
   const o = {};
   DEF.TASKS.headers.forEach(h => { if (h !== 'email') o[h] = t[h] === undefined ? '' : t[h]; });
+  o.waiters = parseList_(o.waiters);
+  o.links = parseList_(o.links);
+  // v1.0 で登録した1人分の返事待ちを移行
+  if (!o.waiters.length && o.waitName) {
+    o.waiters = [{ id: 'w0', name: String(o.waitName), dept: String(o.waitDept || ''), contact: String(o.waitContact || ''), due: String(o.ballDue || ''), replied: false }];
+  }
+  ['waitName', 'waitDept', 'waitContact', 'ballDue'].forEach(k => { delete o[k]; });
   return o;
+}
+
+function parseList_(v) {
+  if (Array.isArray(v)) return v;
+  if (!v) return [];
+  try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+
+function pendingWaiters_(pt) {
+  return pt.ballHolder === 'other' ? pt.waiters.filter(w => !w.replied) : [];
+}
+
+function guessLinkLabel_(url) {
+  const u = String(url).toLowerCase();
+  if (u.indexOf('chouseisan.com') >= 0) return '調整さん';
+  if (u.indexOf('line.me') >= 0) return 'LINE';
+  if (u.indexOf('forms.gle') >= 0 || u.indexOf('docs.google.com/forms') >= 0) return 'Googleフォーム';
+  if (u.indexOf('docs.google.com/spreadsheets') >= 0) return 'スプレッドシート';
+  if (u.indexOf('densuke.biz') >= 0) return '伝助';
+  if (u.indexOf('slack.com') >= 0) return 'Slack';
+  if (u.indexOf('teams.microsoft.com') >= 0) return 'Teams';
+  if (u.indexOf('facebook.com') >= 0) return 'Facebook';
+  return 'Webページ';
 }
 
 function publicLog_(l) {
@@ -574,10 +634,18 @@ function publicLog_(l) {
 /* =========================================================
  * シート操作
  * ========================================================= */
+const HEADER_CHECKED_ = {};
 function sheet_(def) {
   const id = prop_('SPREADSHEET_ID', '');
   if (!id) throw appErr_('サーバーの初期設定が終わっていません。setup()を実行してください。');
-  return SpreadsheetApp.openById(id).getSheetByName(def.name);
+  const sh = SpreadsheetApp.openById(id).getSheetByName(def.name);
+  if (!HEADER_CHECKED_[def.name]) {
+    HEADER_CHECKED_[def.name] = true;
+    if (sh.getLastColumn() < def.headers.length) {   // 列追加のバージョンアップに自動追従
+      sh.getRange(1, 1, 1, def.headers.length).setValues([def.headers]).setFontWeight('bold');
+    }
+  }
+  return sh;
 }
 
 function readAll_(def) {
