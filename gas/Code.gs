@@ -1,6 +1,6 @@
 /**
- * ボール管制塔（ball-kanseito）— GAS バックエンド
- * v1.1.0（返事待ちの複数人対応・確認先URL）
+ * ボール管制塔～タスク管理（ball-kanseito）— GAS バックエンド
+ * v1.2.0（返事待ちの複数人対応・確認先URL・確認先スクリーンショット）
  *
  * 認証 / ミッション(タスク)CRUD / 実績ログ / Gemini実況 / Gemini TTS / Drive保存 / メール送信
  * フロントからは Content-Type: text/plain で JSON を POST する（CORSプリフライト回避）
@@ -9,12 +9,12 @@
  * ※コードを変更したら「デプロイを管理」→ 編集 → バージョン「新バージョン」で再デプロイ（URLはそのまま）
  */
 
-const APP_VERSION = '1.1.0';
-const APP_NAME = 'ボール管制塔';
+const APP_VERSION = '1.2.1';
+const APP_NAME = 'ボール管制塔～タスク管理';   // メール件名・本文に表示
 
 const DEF = {
   USERS: { name: 'Users', headers: ['email', 'nickname', 'salt', 'hash', 'mustChange', 'failCount', 'lockedUntil', 'createdAt', 'lastLogin'] },
-  TASKS: { name: 'Tasks', headers: ['taskId', 'email', 'title', 'category', 'deadline', 'status', 'nextAction', 'ballHolder', 'waitName', 'waitDept', 'waitContact', 'ballDue', 'createdAt', 'updatedAt', 'completedAt', 'waiters', 'links'] },
+  TASKS: { name: 'Tasks', headers: ['taskId', 'email', 'title', 'category', 'deadline', 'status', 'nextAction', 'ballHolder', 'waitName', 'waitDept', 'waitContact', 'ballDue', 'createdAt', 'updatedAt', 'completedAt', 'waiters', 'links', 'shots'] },
   LOGS: { name: 'Logs', headers: ['logId', 'taskId', 'email', 'date', 'text', 'createdAt'] },
   NARRATIONS: { name: 'Narrations', headers: ['id', 'email', 'type', 'text', 'audioFileId', 'createdAt'] }
 };
@@ -27,6 +27,9 @@ const NARRATE_DAILY_LIMIT = 40;   // 1人1日あたりの実況生成上限
 const HASH_ROUNDS = 300;
 const MAX_WAITERS = 200;          // 1ミッションあたりの返事待ち人数の上限
 const MAX_LINKS = 10;             // 確認先URLの上限
+const MAX_SHOTS = 20;             // 確認先スクリーンショットの上限（1ミッション）
+const MAX_SHOT_BYTES = 6 * 1024 * 1024;
+const SHOT_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
 
 /* =========================================================
  * 初期セットアップ（エディタから1回だけ実行）
@@ -92,6 +95,9 @@ function doPost(e) {
     listAll: apiListAll_,
     saveTask: apiSaveTask_,
     deleteTask: apiDeleteTask_,
+    uploadShot: apiUploadShot_,
+    getShot: apiGetShot_,
+    discardShots: apiDiscardShots_,
     addLog: apiAddLog_,
     deleteLog: apiDeleteLog_,
     narrate: apiNarrate_,
@@ -256,6 +262,10 @@ function apiSaveTask_(req, s) {
     if (id) {
       const cur = readAll_(DEF.TASKS).find(t => t.taskId === id && t.email === s.email);
       if (!cur) throw appErr_('ミッションが見つかりません。');
+      const oldShots = parseList_(cur.shots).map(x => x.fileId);
+      const newShots = parseList_(data.shots).map(x => x.fileId);
+      newShots.filter(f => oldShots.indexOf(f) < 0).forEach(f => ownShot_(f, s.email));
+      oldShots.filter(f => newShots.indexOf(f) < 0).forEach(f => trashShot_(f, s.email));
       const justCompleted = data.status === '完了' && cur.status !== '完了';
       const patch = Object.assign({}, data, { updatedAt: now_() });
       if (justCompleted) patch.completedAt = now_();
@@ -268,6 +278,7 @@ function apiSaveTask_(req, s) {
       data,
       { createdAt: now_(), updatedAt: now_(), completedAt: data.status === '完了' ? now_() : '' }
     );
+    parseList_(data.shots).forEach(x => ownShot_(x.fileId, s.email));
     appendRow_(DEF.TASKS, task);
     return { task: publicTask_(task), created: true };
   });
@@ -281,6 +292,7 @@ function apiDeleteTask_(req, s) {
     const logRows = readAll_(DEF.LOGS).filter(l => l.taskId === id && l.email === s.email).map(l => l._row);
     deleteRows_(DEF.LOGS, logRows);
     deleteRows_(DEF.TASKS, [t._row]);
+    parseList_(t.shots).forEach(x => trashShot_(x.fileId, s.email));
     return { taskId: id };
   });
 }
@@ -315,6 +327,59 @@ function apiDeleteLog_(req, s) {
     deleteRows_(DEF.LOGS, [l._row]);
     return { logId: id };
   });
+}
+
+/* =========================================================
+ * 確認先スクリーンショット（LINE など URL のない確認先用）
+ * 画像はブラウザ側で縮小済みの JPEG を受け取り、Drive/shots に非公開で保存。
+ * ファイルの説明欄に持ち主を記録し、本人以外は読めないようにする。
+ * ========================================================= */
+function apiUploadShot_(req, s) {
+  const mime = String(req.mime || '');
+  if (SHOT_MIMES.indexOf(mime) < 0) throw appErr_('画像はJPEG・PNG・WebPのいずれかにしてください。');
+  let bytes;
+  try { bytes = Utilities.base64Decode(String(req.data || '')); } catch (e) { throw appErr_('画像データを読み取れませんでした。'); }
+  if (!bytes.length) throw appErr_('画像データが空です。');
+  if (bytes.length > MAX_SHOT_BYTES) throw appErr_('画像が大きすぎます（6MBまで）。');
+  const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+  const name = 'shot_' + safeName_(s.email) + '_' + Utilities.formatDate(new Date(), tz_(), 'yyyyMMdd_HHmmss') + '_' + Utilities.getUuid().slice(0, 4) + '.' + ext;
+  const file = subFolder_('shots').createFile(Utilities.newBlob(bytes, mime, name));
+  file.setDescription(shotOwnerTag_(s.email));
+  return { fileId: file.getId(), at: now_() };
+}
+
+function apiGetShot_(req, s) {
+  const file = ownShot_(String(req.fileId || ''), s.email);
+  const blob = file.getBlob();
+  return { data: Utilities.base64Encode(blob.getBytes()), mime: blob.getContentType() };
+}
+
+/** 保存されなかった（キャンセル・保存前に外した）画像をゴミ箱へ。どのミッションにも使われていないものだけ */
+function apiDiscardShots_(req, s) {
+  const ids = (Array.isArray(req.fileIds) ? req.fileIds : []).slice(0, MAX_SHOTS * 2).map(String);
+  const used = {};
+  readAll_(DEF.TASKS).filter(t => t.email === s.email)
+    .forEach(t => parseList_(t.shots).forEach(x => { used[x.fileId] = true; }));
+  let n = 0;
+  ids.forEach(f => { if (!used[f]) { trashShot_(f, s.email); n++; } });
+  return { trashed: n };
+}
+
+function shotOwnerTag_(email) {
+  return 'ball-kanseito:' + toHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, email + prop_('PEPPER', ''), Utilities.Charset.UTF_8)).slice(0, 32);
+}
+
+/** 本人がアップロードした画像か確認してファイルを返す */
+function ownShot_(fileId, email) {
+  if (!/^[\w-]{10,}$/.test(fileId)) throw appErr_('画像の指定が正しくありません。');
+  let file;
+  try { file = DriveApp.getFileById(fileId); } catch (e) { throw appErr_('画像が見つかりません。削除された可能性があります。'); }
+  if (file.isTrashed() || file.getDescription() !== shotOwnerTag_(email)) throw appErr_('この画像は表示できません。');
+  return file;
+}
+
+function trashShot_(fileId, email) {
+  try { ownShot_(fileId, email).setTrashed(true); } catch (e) { console.warn('trashShot_: ' + e.message); }
 }
 
 function apiExportBackup_(req, s) {
@@ -398,6 +463,7 @@ function buildContext_(type, tasks, logs, s, taskId) {
         ? 'ボール：' + pt.waiters.length + '人に返事待ち、未回答' + pending.length + '人' + (over.length ? '（うち期日超過' + over.length + '人）' : '') + '、未回答の主な相手 ' + names + (pending.length > 5 ? 'ほか' : '')
         : 'ボール：' + pt.waiters.length + '人全員から回答あり、ボールは自分に戻った');
       if (pt.links.length) parts.push('返事の確認先 ' + pt.links.map(l => l.label).join('、'));
+      if (pt.shots.length) parts.push('確認用のスクリーンショット' + pt.shots.length + '枚');
     } else {
       parts.push('ボール：自分');
     }
@@ -583,8 +649,16 @@ function cleanTask_(t) {
     if (!l.label) l.label = guessLinkLabel_(l.url);
   });
 
+  const shots = (Array.isArray(t.shots) ? t.shots : []).map(x => ({
+    fileId: s(x.fileId).slice(0, 100),
+    label: s(x.label).slice(0, 30),
+    at: s(x.at).slice(0, 19)
+  })).filter(x => /^[\w-]{10,}$/.test(x.fileId));
+  if (shots.length > MAX_SHOTS) throw appErr_('スクリーンショットは' + MAX_SHOTS + '枚までです。');
+
   o.waiters = JSON.stringify(waiters);
   o.links = JSON.stringify(links);
+  o.shots = JSON.stringify(shots);
   if (!o.title) throw appErr_('ミッション名を入力してください。');
   if (o.deadline && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(o.deadline)) throw appErr_('締め切りの日時の形式が正しくありません。');
   if (o.ballHolder === 'other' && !waiters.length) throw appErr_('返事を待っている相手を1人以上入力してください。');
@@ -596,6 +670,7 @@ function publicTask_(t) {
   DEF.TASKS.headers.forEach(h => { if (h !== 'email') o[h] = t[h] === undefined ? '' : t[h]; });
   o.waiters = parseList_(o.waiters);
   o.links = parseList_(o.links);
+  o.shots = parseList_(o.shots);
   // v1.0 で登録した1人分の返事待ちを移行
   if (!o.waiters.length && o.waitName) {
     o.waiters = [{ id: 'w0', name: String(o.waitName), dept: String(o.waitDept || ''), contact: String(o.waitContact || ''), due: String(o.ballDue || ''), replied: false }];

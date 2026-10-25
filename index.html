@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="締め切りと「いま誰がボールを持っているか」を発着案内板で見張る、マルチタスク管理アプリ">
-<title>ボール管制塔</title>
+<title>ボール管制塔～タスク管理</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=DotGothic16&display=swap" rel="stylesheet">
@@ -18,7 +18,7 @@
 <!-- ===================== 認証 ===================== -->
 <main id="authView" class="auth" hidden>
   <div class="auth-card">
-    <h1 class="brand"><span class="ball" aria-hidden="true"></span>ボール管制塔</h1>
+    <h1 class="brand"><span class="ball" aria-hidden="true"></span><span>ボール管制塔<span class="brand-sub">～タスク管理</span></span></h1>
     <p class="auth-lead">締め切りと、いま誰がボールを持っているか。全部の便を、ひとつの案内板で見張ります。</p>
 
     <form class="auth-form" data-view="login" novalidate>
@@ -89,7 +89,7 @@
 <!-- ===================== メイン ===================== -->
 <div id="appView" class="app" hidden>
   <header class="topbar">
-    <div class="brand small"><span class="ball" aria-hidden="true"></span>ボール管制塔</div>
+    <div class="brand small"><span class="ball" aria-hidden="true"></span><span>ボール管制塔<span class="brand-sub">～タスク管理</span></span></div>
 
     <div class="rank" aria-live="polite">
       <span class="rank-title" id="rankTitle">訓練生</span>
@@ -259,9 +259,20 @@
 
       <div class="links-block">
         <h3>返事の確認先</h3>
-        <p class="hint">調整さん・LINE・Googleフォームなど、回答を確かめに行く場所のURL。</p>
+        <p class="hint">調整さん・Googleフォームなど、回答を確かめに行く場所のURL。</p>
         <ul id="linkList" class="link-edit-list"></ul>
         <button type="button" class="btn ghost small" id="btnAddLink">＋ 確認先を追加</button>
+
+        <div class="shots-block">
+          <h4>スクリーンショット</h4>
+          <p class="hint">LINEのグループなどURLのない確認先は、画面のスクショを登録できます（20枚まで）。パソコンでは画像の貼り付け（Ctrl+V）もできます。</p>
+          <ul id="shotList" class="shot-grid"></ul>
+          <label class="btn ghost small file-btn">
+            <input type="file" id="shotInput" accept="image/*" multiple>
+            ＋ スクショを追加
+          </label>
+        </div>
+
         <datalist id="linkLabels">
           <option value="調整さん"><option value="LINE"><option value="LINEオープンチャット">
           <option value="Googleフォーム"><option value="伝助"><option value="メール"><option value="Slack"><option value="Teams">
@@ -341,11 +352,11 @@
 <!-- ===================== ダイアログ：使い方 ===================== -->
 <dialog id="helpDialog" class="dlg wide">
   <form method="dialog">
-    <h2>ボール管制塔の使い方</h2>
+    <h2>ボール管制塔～タスク管理の使い方</h2>
     <p class="dlg-sub">抱えている用事を「便」として案内板に並べ、締め切りと返事待ちを見張ります。</p>
     <ol class="steps">
       <li><b>ミッションを登録</b>「＋ ミッションを登録」から、名前・締め切り・次にやることを入れます。案内板に便として並びます。</li>
-      <li><b>ボールの所在を決める</b>返事待ちなら「相手」を選び、待っている人を登録します。何人でも登録でき、「まとめて追加」で名簿を貼り付けることもできます。調整さんやLINEなど、返事を確かめる場所のURLも登録できます。</li>
+      <li><b>ボールの所在を決める</b>返事待ちなら「相手」を選び、待っている人を登録します。何人でも登録でき、「まとめて追加」で名簿を貼り付けることもできます。調整さんなど返事を確かめる場所のURLや、LINEなどのスクリーンショットも登録できます。</li>
       <li><b>回答をチェック</b>返事が来た人は「ボールの所在」で「回答済み」にチェック。全員そろうとボールが自分に戻ります。期日を過ぎた未回答の人には、催促メールの下書きをまとめて開けます。</li>
       <li><b>今日やったことを記録</b>便の「記録」から書くと +10 XP。搭乗待ちの便は自動で飛行中になります。</li>
       <li><b>着陸させる</b>終わったら「着陸」。+50 XP、締め切りに間に合えばさらに +30 XP と着陸映像。</li>
@@ -367,6 +378,24 @@
       <button type="submit" class="btn primary">はじめる</button>
     </div>
   </form>
+</dialog>
+
+<!-- ===================== ダイアログ：スクショ表示 ===================== -->
+<dialog id="shotViewer" class="viewer">
+  <div class="viewer-head">
+    <p class="viewer-cap"><b id="viewerLabel"></b><span id="viewerMeta"></span></p>
+    <button type="button" class="icon-btn small" id="viewerClose" aria-label="閉じる">×</button>
+  </div>
+  <div class="viewer-body">
+    <button type="button" class="viewer-nav prev" id="viewerPrev" aria-label="前の画像">‹</button>
+    <img id="viewerImg" alt="">
+    <p class="viewer-loading" id="viewerLoading">読み込んでいます…</p>
+    <button type="button" class="viewer-nav next" id="viewerNext" aria-label="次の画像">›</button>
+  </div>
+  <div class="viewer-foot">
+    <span id="viewerCount"></span>
+    <a id="viewerDownload" download>画像を保存</a>
+  </div>
 </dialog>
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

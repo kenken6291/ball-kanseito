@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔 — app.js v1.1.0（返事待ちの複数人対応・確認先URL）
+   ボール管制塔～タスク管理 — app.js v1.2.1（返事待ちの複数人・確認先URL・確認先スクショ）
    認証 / 案内板描画 / ボール所在 / 本日の記録 / XP・階級
    実況（Gemini + TTS 再生）/ Google Earth Studio 映像演出
    ========================================================= */
@@ -27,7 +27,8 @@
     animate: true,
     lastNarration: null,
     finalCallShown: false,
-    form: { waiters: [], links: [] }
+    form: { waiters: [], links: [], shots: [], newShots: [], uploading: 0, saved: false },
+    viewer: { shots: [], index: 0, title: '' }
   };
 
   const STATUS = {
@@ -76,6 +77,7 @@
   const waitersOf = t => (t.ballHolder === 'other' && Array.isArray(t.waiters)) ? t.waiters : [];
   const pendingOf = t => waitersOf(t).filter(w => !w.replied);
   const linksOf = t => Array.isArray(t.links) ? t.links : [];
+  const shotsOf = t => Array.isArray(t.shots) ? t.shots : [];
   /** ボールが相手側にあるか：未回答の人が1人でもいれば相手側。全員回答済みなら自分に戻る */
   const ballIsThem = t => isOpen(t) && pendingOf(t).length > 0;
   const isEmail = c => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(c || '').trim());
@@ -93,7 +95,15 @@
     return 'Webページ';
   }
   const linkChips = (t, cls) => linksOf(t).map(l =>
-    '<a class="' + (cls || 'chip') + '" href="' + esc(l.url) + '" target="_blank" rel="noopener">' + esc(l.label || guessLinkLabel(l.url)) + '</a>').join('');
+    '<a class="' + (cls || 'chip') + '" href="' + esc(l.url) + '" target="_blank" rel="noopener">' + esc(l.label || guessLinkLabel(l.url)) + '</a>').join('')
+    + (shotsOf(t).length
+      ? '<button type="button" class="' + (cls || 'chip') + ' shot-chip" data-shots="' + esc(t.taskId) + '">'
+        + esc(shotLabelSummary(t)) + ' ' + shotsOf(t).length + '枚</button>'
+      : '');
+  function shotLabelSummary(t) {
+    const labels = Array.from(new Set(shotsOf(t).map(x => x.label).filter(Boolean)));
+    return labels.length === 1 ? labels[0] + 'のスクショ' : 'スクショ';
+  }
 
   async function api(action, data = {}) {
     const url = gasUrl();
@@ -412,7 +422,7 @@
   function ballCell(t, today) {
     const all = waitersOf(t);
     const pen = pendingOf(t);
-    const chips = linksOf(t).length ? '<span class="ball-links">' + linkChips(t, 'chip dark') + '</span>' : '';
+    const chips = (linksOf(t).length || shotsOf(t).length) ? '<span class="ball-links">' + linkChips(t, 'chip dark') + '</span>' : '';
     if (!isOpen(t) || !all.length) {
       return '<span class="c-ball me"><span class="dot"></span><span>自分<small>' + (isOpen(t) ? 'ボールは手元' : '') + '</small>' + chips + '</span></span>';
     }
@@ -477,7 +487,7 @@
     return '<li class="wgroup' + (over.length ? ' has-overdue' : '') + '">'
       + '<div class="wg-head"><b>' + esc(t.title) + '</b><span class="wg-count">回答 ' + done.length + '/' + all.length + '人</span></div>'
       + '<span class="meter" aria-hidden="true"><i style="width:' + pct + '%"></i></span>'
-      + (linksOf(t).length ? '<div class="chips">' + linkChips(t) + '</div>' : '')
+      + ((linksOf(t).length || shotsOf(t).length) ? '<div class="chips">' + linkChips(t) + '</div>' : '')
       + '<ul class="wt-list">' + pen.slice(0, SHOW).map(w => waiterItem(t, w, today)).join('') + '</ul>'
       + (pen.length > SHOW ? '<details class="more"><summary>未回答のほか' + (pen.length - SHOW) + '人</summary><ul class="wt-list">' + pen.slice(SHOW).map(w => waiterItem(t, w, today)).join('') + '</ul></details>' : '')
       + (done.length ? '<details class="more"><summary>回答済み ' + done.length + '人</summary><ul class="wt-list">' + done.map(w => waiterItem(t, w, today)).join('') + '</ul></details>' : '')
@@ -668,6 +678,149 @@
     formMsg($('#taskForm'), added ? added + '人を追加しました。' : '追加できる名前がありませんでした（重複は除きます）。', !!added);
   }
 
+  /* ---------- 確認先スクリーンショット ---------- */
+  const shotCache = new Map();   // fileId → Promise<dataURL>
+
+  function shotSrc(fileId) {
+    if (!shotCache.has(fileId)) {
+      const p = api('getShot', { fileId: fileId })
+        .then(r => 'data:' + r.mime + ';base64,' + r.data)
+        .catch(err => { shotCache.delete(fileId); throw err; });
+      shotCache.set(fileId, p);
+    }
+    return shotCache.get(fileId);
+  }
+
+  /** スクショを縮小して JPEG に（縦長の LINE 画面でも文字が読める解像度を残す） */
+  function compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 1280 / img.naturalWidth, 3200 / img.naturalHeight);
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        const dataUrl = c.toDataURL('image/jpeg', 0.85);
+        resolve({ dataUrl: dataUrl, data: dataUrl.split(',')[1], mime: 'image/jpeg' });
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした。')); };
+      img.src = url;
+    });
+  }
+
+  async function addShotFiles(files) {
+    const f = $('#taskForm');
+    const list = Array.from(files || []).filter(x => /^image\//.test(x.type));
+    if (!list.length) return;
+    const room = 20 - state.form.shots.length;
+    if (room <= 0) { formMsg(f, 'スクリーンショットは20枚までです。'); return; }
+    if (list.length > room) formMsg(f, '20枚までのため、' + room + '枚だけ追加します。');
+    const defaultLabel = 'LINE';   // 名前は後から書き換え可
+    for (const file of list.slice(0, room)) {
+      const item = { fileId: '', label: defaultLabel, at: '', tmp: newId(), preview: '' };
+      state.form.shots.push(item);
+      state.form.uploading++;
+      renderShotRows();
+      try {
+        const img = await compressImage(file);
+        item.preview = img.dataUrl;
+        renderShotRows();
+        const r = await api('uploadShot', { data: img.data, mime: img.mime });
+        item.fileId = r.fileId;
+        item.at = r.at;
+        shotCache.set(r.fileId, Promise.resolve(img.dataUrl));
+        state.form.newShots.push(r.fileId);
+      } catch (err) {
+        state.form.shots = state.form.shots.filter(x => x !== item);
+        formMsg(f, err.message);
+      } finally {
+        state.form.uploading--;
+        renderShotRows();
+      }
+    }
+  }
+
+  function renderShotRows() {
+    const ul = $('#shotList');
+    ul.innerHTML = state.form.shots.map((x, i) => '<li class="shot-item' + (x.fileId ? '' : ' is-uploading') + '" data-i="' + i + '">'
+      + '<button type="button" class="shot-thumb" data-view="' + i + '"' + (x.fileId ? '' : ' disabled') + ' aria-label="拡大して見る">'
+      + '<img alt="" ' + (x.preview ? 'src="' + x.preview + '"' : (x.fileId ? 'data-file="' + esc(x.fileId) + '"' : '')) + '>'
+      + (x.fileId ? '' : '<span class="up">送信中…</span>') + '</button>'
+      + '<input type="text" data-k="label" list="linkLabels" maxlength="30" placeholder="例：LINE" aria-label="スクショの名前" value="' + esc(x.label) + '">'
+      + '<button type="button" class="del" data-del aria-label="このスクショを外す"' + (x.fileId ? '' : ' disabled') + '>×</button>'
+      + '</li>').join('');
+    loadThumbs(ul);
+    $('#shotInput').closest('.file-btn').hidden = state.form.shots.length >= 20;
+  }
+
+  function loadThumbs(root) {
+    $$('img[data-file]', root).forEach(img => {
+      const id = img.dataset.file;
+      img.removeAttribute('data-file');
+      shotSrc(id).then(src => { img.src = src; }).catch(() => { img.alt = '読み込めません'; });
+    });
+  }
+
+  function openViewer(shots, index, title) {
+    state.viewer = { shots: shots, index: index, title: title || '' };
+    $('#shotViewer').showModal();
+    showViewerImage();
+  }
+
+  async function showViewerImage() {
+    const v = state.viewer;
+    const x = v.shots[v.index];
+    if (!x) return;
+    const img = $('#viewerImg');
+    $('#viewerLabel').textContent = x.label || 'スクリーンショット';
+    $('#viewerMeta').textContent = (v.title ? '　' + v.title : '') + (x.at ? '　' + fmtDT(x.at) + ' 登録' : '');
+    $('#viewerCount').textContent = v.shots.length > 1 ? (v.index + 1) + ' / ' + v.shots.length : '';
+    $('#viewerPrev').hidden = $('#viewerNext').hidden = v.shots.length < 2;
+    img.hidden = true;
+    $('#viewerLoading').hidden = false;
+    $('#viewerLoading').textContent = '読み込んでいます…';
+    try {
+      const src = x.preview || await shotSrc(x.fileId);
+      if (state.viewer.shots[state.viewer.index] !== x) return;
+      img.src = src;
+      img.alt = (x.label || 'スクリーンショット') + ' の画像';
+      img.hidden = false;
+      $('#viewerLoading').hidden = true;
+      const dl = $('#viewerDownload');
+      dl.href = src;
+      dl.download = (x.label || 'screenshot') + '_' + (v.index + 1) + '.jpg';
+    } catch (err) {
+      $('#viewerLoading').textContent = err.message;
+    }
+  }
+
+  function stepViewer(d) {
+    const v = state.viewer;
+    if (v.shots.length < 2) return;
+    v.index = (v.index + d + v.shots.length) % v.shots.length;
+    showViewerImage();
+  }
+
+  function openTaskShots(taskId) {
+    const t = findTask(taskId);
+    if (t && shotsOf(t).length) openViewer(shotsOf(t), 0, t.title);
+  }
+
+  /** 保存されずに終わったアップロード画像を片付ける */
+  function discardUnsaved(keepIds) {
+    const keep = new Set(keepIds || []);
+    const ids = state.form.newShots.filter(id => !keep.has(id));
+    state.form.newShots = [];
+    if (ids.length) api('discardShots', { fileIds: ids }).catch(() => {});
+  }
+
   function openTaskDialog(t) {
     const f = $('#taskForm');
     f.reset();
@@ -681,6 +834,11 @@
     $$('input[name="ballHolder"]', f).forEach(r => { r.checked = r.value === (v.ballHolder === 'other' ? 'other' : 'me'); });
     state.form.waiters = (v.waiters || []).map(w => Object.assign({ dept: '', contact: '', due: '', replied: false }, w));
     state.form.links = (v.links || []).map(l => Object.assign({}, l));
+    state.form.shots = (v.shots || []).map(x => Object.assign({}, x));
+    state.form.newShots = [];
+    state.form.uploading = 0;
+    state.form.saved = false;
+    renderShotRows();
     $('#bulkBox').hidden = true;
     $('#btnBulkToggle').setAttribute('aria-expanded', 'false');
     $('#bulkDue').value = '';
@@ -702,6 +860,8 @@
     o.links = state.form.links
       .map(l => ({ label: l.label.trim() || (l.url.trim() ? guessLinkLabel(l.url.trim()) : ''), url: l.url.trim() }))
       .filter(l => l.url);
+    o.shots = state.form.shots.filter(x => x.fileId)
+      .map(x => ({ fileId: x.fileId, label: String(x.label || '').trim(), at: x.at || '' }));
     return o;
   }
 
@@ -753,6 +913,43 @@
       formMsg($('#taskForm'), '未回答の全員に期日 ' + fmtD(due) + ' を設定しました。', true);
     });
 
+    // スクリーンショット
+    $('#shotInput').addEventListener('change', e => {
+      addShotFiles(e.target.files);
+      e.target.value = '';
+    });
+    $('#shotList').addEventListener('input', e => {
+      const li = e.target.closest('.shot-item');
+      if (li && e.target.dataset.k === 'label') state.form.shots[Number(li.dataset.i)].label = e.target.value;
+    });
+    $('#shotList').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') e.preventDefault();
+    });
+    $('#shotList').addEventListener('click', e => {
+      const del = e.target.closest('[data-del]');
+      if (del) {
+        state.form.shots.splice(Number(del.closest('.shot-item').dataset.i), 1);
+        renderShotRows();
+        return;
+      }
+      const th = e.target.closest('[data-view]');
+      if (th) {
+        const ready = state.form.shots.filter(x => x.fileId);
+        const x = state.form.shots[Number(th.dataset.view)];
+        openViewer(ready, Math.max(0, ready.indexOf(x)), $('#taskForm').elements.title.value);
+      }
+    });
+    // パソコン：Ctrl+V でスクショ貼り付け（返事待ち欄を開いているとき）
+    $('#taskDialog').addEventListener('paste', e => {
+      if ($('#taskForm .wait-fields').hidden) return;
+      const files = Array.from((e.clipboardData && e.clipboardData.items) || [])
+        .filter(it => it.kind === 'file' && /^image\//.test(it.type)).map(it => it.getAsFile()).filter(Boolean);
+      if (!files.length) return;
+      e.preventDefault();
+      addShotFiles(files);
+    });
+    $('#taskDialog').addEventListener('close', () => { if (!state.form.saved) discardUnsaved([]); });
+
     // 確認先URL
     $('#linkList').addEventListener('input', e => {
       const row = e.target.closest('.link-row');
@@ -789,6 +986,7 @@
   async function submitTask(e) {
     e.preventDefault();
     const f = $('#taskForm');
+    if (state.form.uploading > 0) { formMsg(f, 'スクリーンショットを送信中です。終わってから保存してください。'); return; }
     const data = readTaskForm();
     if (!data.title) { formMsg(f, 'ミッション名を入力してください。'); return; }
     if (data.ballHolder === 'other' && !data.waiters.length) { formMsg(f, '返事を待っている相手を1人以上入力してください。'); return; }
@@ -800,6 +998,8 @@
     try {
       const r = await api('saveTask', { task: data });
       replaceTask(r.task);
+      state.form.saved = true;
+      discardUnsaved(data.shots.map(x => x.fileId));
       state.animate = true;
       $('#taskDialog').close();
       renderAll();
@@ -1094,6 +1294,8 @@
     $('#btnNarrate').addEventListener('click', () => narrate('briefing'));
 
     $('#boardList').addEventListener('click', e => {
+      const sc = e.target.closest('[data-shots]');
+      if (sc) { openTaskShots(sc.dataset.shots); return; }
       const b = e.target.closest('button[data-act]');
       if (!b) return;
       const t = findTask(b.closest('.row').dataset.id);
@@ -1112,6 +1314,27 @@
       state.animate = true;
       renderBoard();
     }));
+
+    $('#ballThem').addEventListener('click', e => {
+      const sc = e.target.closest('[data-shots]');
+      if (sc) openTaskShots(sc.dataset.shots);
+    });
+    $('#viewerClose').addEventListener('click', () => $('#shotViewer').close());
+    $('#viewerPrev').addEventListener('click', () => stepViewer(-1));
+    $('#viewerNext').addEventListener('click', () => stepViewer(1));
+    $('#shotViewer').addEventListener('keydown', e => {
+      if (e.key === 'ArrowLeft') stepViewer(-1);
+      if (e.key === 'ArrowRight') stepViewer(1);
+    });
+    $('#shotViewer').addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+    let touchX = null;
+    $('#viewerImg').addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+    $('#viewerImg').addEventListener('touchend', e => {
+      if (touchX === null) return;
+      const dx = e.changedTouches[0].clientX - touchX;
+      touchX = null;
+      if (Math.abs(dx) > 50) stepViewer(dx < 0 ? 1 : -1);
+    });
 
     $('#ballThem').addEventListener('change', e => {
       const c = e.target.closest('input[type="checkbox"][data-w]');

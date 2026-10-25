@@ -1,10 +1,10 @@
 /**
- * ボール管制塔 — 設定ファイル
+ * ボール管制塔～タスク管理 — 設定ファイル
  * GAS_URL は画面の「接続設定」からも上書きできます（ブラウザに保存され、こちらより優先）。
  */
 window.APP_CONFIG = {
-  APP_NAME: 'ボール管制塔',
-  VERSION: 'v1.1.0',
+  APP_NAME: 'ボール管制塔～タスク管理',
+  VERSION: 'v1.2.1',
 
   // GASウェブアプリのURL（https://script.google.com/macros/s/.../exec）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwRtwC8UG6W3MoMJggg0iBrUm0cefnffG9Ynyu-wrUjsbzturdanPJ-zlJwZJvkpqdvRQ/exec',
