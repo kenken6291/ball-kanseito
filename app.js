@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔～タスク管理 — app.js v1.3.0（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
+   ボール管制塔～タスク管理 — app.js v1.3.1（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
    認証 / 案内板描画 / ボール所在 / 本日の記録 / XP・階級
    実況（Gemini + TTS 再生）/ Google Earth Studio 映像演出
    ========================================================= */
@@ -12,7 +12,7 @@
   const LS = {
     token: 'bk_token', gas: 'bk_gas_url', voice: 'bk_voice', bg: 'bk_bg',
     auto: 'bk_auto_narrate', onboard: 'bk_onboarded',
-    view: 'bk_view', zoom: 'bk_zoom'
+    view: 'bk_view', zoom: 'bk_zoom', silence: 'bk_voice_silence'
   };
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -675,8 +675,25 @@
   }
 
   /* ---------------- 音声・ひとこと登録 ---------------- */
+  // 話の途中で少し間が空いても止めずに聞き続け、「無音が一定時間続いたら確定」する。
+  // ブラウザが勝手に認識を終えても、利用者が確定するまで自動で再開してつなげる。
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const voice = { rec: null, media: null, active: false, timer: 0, useRecorder: !SR };
+  const IS_ANDROID = /Android/i.test(navigator.userAgent);
+  const voice = {
+    rec: null, media: null, active: false, useRecorder: !SR,
+    committed: '', session: '', userStop: false, failed: false,
+    lastHeard: 0, startedAt: 0, tick: 0, maxTimer: 0, audioCtx: null
+  };
+  const VOICE_MAX_MS = 3 * 60 * 1000;     // 1回の音声入力の上限（3分）
+  const NO_SPEECH_MS = 10000;             // 話し始めを待つ時間
+
+  /** 話し終わりと判断する無音の長さ（ミリ秒）。0 は「マイクを押すまで確定しない」 */
+  function silenceMs() {
+    const v = store(LS.silence);
+    if (v === 'manual') return 0;
+    const n = Number(v || CFG.VOICE_SILENCE_SEC || 3);
+    return (isFinite(n) && n > 0 ? n : 3) * 1000;
+  }
 
   function setQuickStatus(msg, busy) {
     const p = $('#quickStatus');
@@ -690,61 +707,158 @@
     const b = $('#btnVoice');
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));
-    b.setAttribute('aria-label', on ? '話し終わったら押してください' : '声でミッションを登録');
+    b.setAttribute('aria-label', on ? '話し終わったら押して確定' : '声でミッションを登録');
     if (msg !== undefined) setQuickStatus(msg);
   }
 
+  function listeningHint() {
+    const ms = silenceMs();
+    return ms
+      ? '聞いています…　途中で間が空いても大丈夫です。' + (ms / 1000) + '秒ほど黙ると確定します（マイクを押してもすぐ確定）'
+      : '聞いています…　途中で間が空いても大丈夫です。話し終わったらマイクを押して確定してください';
+  }
+
   async function toggleVoice() {
-    if (voice.active) { stopVoice(); return; }
+    if (voice.active) { finishVoice(); return; }
     unlockAudio();
     stopAudio();
     if (voice.useRecorder) await startRecording(); else startRecognition();
   }
 
+  /* --- 音声認識（文字起こしはブラウザ側） --- */
   function startRecognition() {
-    let finalText = '';
-    let failed = false;
+    voice.committed = '';
+    voice.session = '';
+    voice.userStop = false;
+    voice.failed = false;
+    voice.startedAt = Date.now();
+    voice.lastHeard = 0;
+    $('#quickText').value = '';
+    voiceUI(true, listeningHint());
+    startTick();
+    clearTimeout(voice.maxTimer);
+    voice.maxTimer = setTimeout(finishVoice, VOICE_MAX_MS);
+    openRecognition();
+  }
+
+  function openRecognition() {
     const rec = new SR();
     rec.lang = 'ja-JP';
     rec.interimResults = true;
-    rec.continuous = false;
+    // Android の Chrome は continuous だと同じ文が重複して返るため、1文ごとに認識を再開してつなげる
+    rec.continuous = !IS_ANDROID;
+    voice.session = '';
+
     rec.onresult = e => {
+      if (voice.rec !== rec) return;
+      let fin = '';
       let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
+      for (let i = 0; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) finalText += r[0].transcript; else interim += r[0].transcript;
+        if (r.isFinal) fin += r[0].transcript; else interim += r[0].transcript;
       }
-      $('#quickText').value = finalText + interim;
+      voice.session = fin;
+      voice.lastHeard = Date.now();
+      $('#quickText').value = joinSpeech(voice.committed, fin + interim);
     };
+
     rec.onerror = e => {
-      failed = true;
+      if (e.error === 'no-speech' || e.error === 'aborted') return;   // 間が空いただけ。onend で再開する
+      voice.failed = true;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         setQuickStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。');
-      } else if (e.error === 'no-speech') {
-        setQuickStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。');
       } else if (e.error === 'network' || e.error === 'audio-capture') {
         voice.useRecorder = true;
         setQuickStatus('この端末の音声認識が使えないため、録音してAIで聞き取る方式に切り替えました。もう一度マイクを押してください。');
       }
     };
+
     rec.onend = () => {
+      if (voice.rec !== rec) return;   // 古い認識セッションの終了通知は無視
+      // ここまでの確定分を足し込む
+      voice.committed = joinSpeech(voice.committed, voice.session);
+      voice.session = '';
       voice.rec = null;
-      voiceUI(false);
-      const text = $('#quickText').value.trim();
-      if (!failed && text) parseAndOpen({ text: text });
-      else if (!failed) setQuickStatus('');
+      if (voice.active && !voice.userStop && !voice.failed) {
+        // 利用者が確定するまで聞き続ける（ブラウザが途中で認識を閉じても再開）
+        setTimeout(() => {
+          if (!voice.active || voice.userStop) return;
+          try { openRecognition(); } catch (err) { endRecognition(); }
+        }, 120);
+        return;
+      }
+      endRecognition();
     };
+
     voice.rec = rec;
-    $('#quickText').value = '';
-    try {
-      rec.start();
-      voiceUI(true, '聞いています… 話し終わると自動で読み取ります');
-    } catch (err) {
-      voice.useRecorder = true;
-      startRecording();
+    try { rec.start(); }
+    catch (err) {
+      if (!voice.committed) { voice.useRecorder = true; stopTick(); voiceUI(false); startRecording(); }
+      else endRecognition();
     }
   }
 
+  function endRecognition() {
+    if (!voice.active) return;   // 二重に確定しない
+    stopTick();
+    clearTimeout(voice.maxTimer);
+    const failed = voice.failed;
+    voiceUI(false);
+    const text = ($('#quickText').value || voice.committed).trim();
+    $('#quickText').value = text;
+    if (failed) return;
+    if (text) parseAndOpen({ text: text });
+    else setQuickStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。');
+  }
+
+  /** 話し言葉をつなぐ（句読点がなければ読点を補う） */
+  function joinSpeech(a, b) {
+    a = String(a || '').trim();
+    b = String(b || '').trim();
+    if (!a) return b;
+    if (!b) return a;
+    return /[。、！？!?,.\s]$/.test(a) ? a + b : a + '、' + b;
+  }
+
+  /* --- 無音の見張り（認識・録音で共通） --- */
+  function startTick() {
+    stopTick();
+    voice.tick = setInterval(() => {
+      if (!voice.active) return;
+      const now = Date.now();
+      const ms = silenceMs();
+      const heard = voice.lastHeard > 0;
+      if (!heard) {
+        if (now - voice.startedAt > NO_SPEECH_MS) finishVoice();
+        return;
+      }
+      if (!ms) return;   // 手動確定モード
+      const quiet = now - voice.lastHeard;
+      if (quiet >= ms) { finishVoice(); return; }
+      if (quiet >= 1000) {
+        setQuickStatus('このまま黙っていると、あと' + Math.ceil((ms - quiet) / 1000) + '秒で確定します…（続けて話せば延長）');
+      } else {
+        setQuickStatus(voice.media ? '録音中…　途中で間が空いても大丈夫です' : listeningHint());
+      }
+    }, 250);
+  }
+
+  function stopTick() { clearInterval(voice.tick); voice.tick = 0; }
+
+  /** 確定（マイクをもう一度押した／無音が続いた／上限時間） */
+  function finishVoice() {
+    voice.userStop = true;
+    stopTick();
+    if (voice.rec) {
+      try { voice.rec.stop(); } catch (e) { endRecognition(); }
+    } else if (voice.media && voice.media.state !== 'inactive') {
+      voice.media.stop();
+    } else if (voice.active && !voice.media) {
+      endRecognition();
+    }
+  }
+
+  /* --- 録音方式（音声認識が使えないブラウザ用。文字起こしは Gemini） --- */
   async function startRecording() {
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       setQuickStatus('このブラウザでは音声入力が使えません。文字で入力してください。');
@@ -759,24 +873,50 @@
     const chunks = [];
     mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
-      clearTimeout(voice.timer);
+      stopTick();
+      clearTimeout(voice.maxTimer);
       stream.getTracks().forEach(t => t.stop());
+      if (voice.audioCtx) { try { voice.audioCtx.close(); } catch (e) { /* noop */ } voice.audioCtx = null; }
       voice.media = null;
       voiceUI(false);
       const blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
-      if (blob.size < 2000) { setQuickStatus('録音が短すぎました。もう一度どうぞ。'); return; }
+      if (!voice.lastHeard || blob.size < 2000) { setQuickStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。'); return; }
       const b64 = await blobToBase64(blob);
       parseAndOpen({ audio: b64, mime: (blob.type || 'audio/webm').split(';')[0] });
     };
-    voice.media = mr;
-    mr.start();
-    voiceUI(true, '録音中… 話し終わったらもう一度マイクを押してください（最長1分）');
-    voice.timer = setTimeout(stopVoice, 60000);
-  }
 
-  function stopVoice() {
-    if (voice.rec) { try { voice.rec.stop(); } catch (e) { /* noop */ } }
-    if (voice.media && voice.media.state !== 'inactive') voice.media.stop();
+    // 声の大きさを見て「話している／黙っている」を判定
+    voice.lastHeard = 0;
+    voice.startedAt = Date.now();
+    voice.userStop = false;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new Ctx();
+      const src = ctx.createMediaStreamSource(stream);
+      const an = ctx.createAnalyser();
+      an.fftSize = 1024;
+      src.connect(an);
+      const buf = new Uint8Array(an.fftSize);
+      voice.audioCtx = ctx;
+      const watch = () => {
+        if (!voice.media) return;
+        an.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+        if (Math.sqrt(sum / buf.length) > 0.04) voice.lastHeard = Date.now();
+        requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+    } catch (e) {
+      voice.lastHeard = Date.now();   // 判定できない端末は手動で確定
+    }
+
+    voice.media = mr;
+    mr.start(1000);
+    voiceUI(true, '録音中…　途中で間が空いても大丈夫です');
+    startTick();
+    clearTimeout(voice.maxTimer);
+    voice.maxTimer = setTimeout(finishVoice, 90 * 1000);
   }
 
   function blobToBase64(blob) {
@@ -1743,6 +1883,7 @@
     f.elements.voice.checked = store(LS.voice) !== 'off';
     f.elements.autoNarrate.checked = store(LS.auto) !== 'off';
     f.elements.bg.checked = store(LS.bg) !== 'off';
+    f.elements.voiceSilence.value = store(LS.silence) || String(CFG.VOICE_SILENCE_SEC || 3);
     $('#pingResult').textContent = '';
     $('#backupResult').textContent = '';
     $('#backupBox').hidden = !state.token || $('#appView').hidden;
@@ -1761,6 +1902,7 @@
     store(LS.voice, f.elements.voice.checked ? null : 'off');
     store(LS.auto, f.elements.autoNarrate.checked ? null : 'off');
     store(LS.bg, f.elements.bg.checked ? null : 'off');
+    store(LS.silence, f.elements.voiceSilence.value);
     if (!f.elements.voice.checked) stopAudio();
     $('#settingsDialog').close();
     if (!$('#appView').hidden) applyBackground();

@@ -4,13 +4,16 @@
  */
 window.APP_CONFIG = {
   APP_NAME: 'ボール管制塔～タスク管理',
-  VERSION: 'v1.3.0',
+  VERSION: 'v1.3.1',
 
   // GASウェブアプリのURL（https://script.google.com/macros/s/.../exec）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwRtwC8UG6W3MoMJggg0iBrUm0cefnffG9Ynyu-wrUjsbzturdanPJ-zlJwZJvkpqdvRQ/exec',
 
   // 締め切りまで何時間を切ったら「最終案内」にするか
   DEADLINE_WARN_HOURS: 48,
+
+  // 音声で登録するとき、何秒黙ったら話し終わりとみなすか（画面の設定で変更可）
+  VOICE_SILENCE_SEC: 3,
 
   // Gemini TTS が失敗したとき、ブラウザ内蔵の読み上げで代替するか
   TTS_FALLBACK_WEBSPEECH: true,
