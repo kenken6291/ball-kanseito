@@ -1,6 +1,6 @@
 /**
  * ボール管制塔～タスク管理（ball-kanseito）— GAS バックエンド
- * v1.2.0（返事待ちの複数人対応・確認先URL・確認先スクリーンショット）
+ * v1.3.0（音声・ひとこと登録、開始日、工程表のドラッグ日程変更）
  *
  * 認証 / ミッション(タスク)CRUD / 実績ログ / Gemini実況 / Gemini TTS / Drive保存 / メール送信
  * フロントからは Content-Type: text/plain で JSON を POST する（CORSプリフライト回避）
@@ -9,12 +9,12 @@
  * ※コードを変更したら「デプロイを管理」→ 編集 → バージョン「新バージョン」で再デプロイ（URLはそのまま）
  */
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 const APP_NAME = 'ボール管制塔～タスク管理';   // メール件名・本文に表示
 
 const DEF = {
   USERS: { name: 'Users', headers: ['email', 'nickname', 'salt', 'hash', 'mustChange', 'failCount', 'lockedUntil', 'createdAt', 'lastLogin'] },
-  TASKS: { name: 'Tasks', headers: ['taskId', 'email', 'title', 'category', 'deadline', 'status', 'nextAction', 'ballHolder', 'waitName', 'waitDept', 'waitContact', 'ballDue', 'createdAt', 'updatedAt', 'completedAt', 'waiters', 'links', 'shots'] },
+  TASKS: { name: 'Tasks', headers: ['taskId', 'email', 'title', 'category', 'deadline', 'status', 'nextAction', 'ballHolder', 'waitName', 'waitDept', 'waitContact', 'ballDue', 'createdAt', 'updatedAt', 'completedAt', 'waiters', 'links', 'shots', 'startDate'] },
   LOGS: { name: 'Logs', headers: ['logId', 'taskId', 'email', 'date', 'text', 'createdAt'] },
   NARRATIONS: { name: 'Narrations', headers: ['id', 'email', 'type', 'text', 'audioFileId', 'createdAt'] }
 };
@@ -24,6 +24,7 @@ const SESSION_TTL = 21600;        // 6時間（CacheServiceの上限）
 const MAX_FAIL = 5;               // 連続失敗でロック
 const LOCK_MIN = 15;              // ロック時間（分）
 const NARRATE_DAILY_LIMIT = 40;   // 1人1日あたりの実況生成上限
+const PARSE_DAILY_LIMIT = 100;    // 1人1日あたりの音声・ひとこと登録の上限
 const HASH_ROUNDS = 300;
 const MAX_WAITERS = 200;          // 1ミッションあたりの返事待ち人数の上限
 const MAX_LINKS = 10;             // 確認先URLの上限
@@ -97,6 +98,7 @@ function doPost(e) {
     deleteTask: apiDeleteTask_,
     uploadShot: apiUploadShot_,
     getShot: apiGetShot_,
+    parseTask: apiParseTask_,
     discardShots: apiDiscardShots_,
     addLog: apiAddLog_,
     deleteLog: apiDeleteLog_,
@@ -412,7 +414,7 @@ const NARRATION_SYSTEM = [
 ].join('\n');
 
 function apiNarrate_(req, s) {
-  checkRate_(s.email);
+  checkRate_(s.email, 'nr', NARRATE_DAILY_LIMIT, '実況');
   const type = ['briefing', 'complete', 'deadline'].indexOf(req.type) >= 0 ? req.type : 'briefing';
   const tasks = readAll_(DEF.TASKS).filter(t => t.email === s.email);
   const logs = readAll_(DEF.LOGS).filter(l => l.email === s.email);
@@ -512,14 +514,18 @@ function buildContext_(type, tasks, logs, s, taskId) {
 }
 
 function gemini_(system, user) {
+  return geminiCall_(system, [{ text: user }], { temperature: 0.9, maxOutputTokens: 2048 });
+}
+
+function geminiCall_(system, parts, generationConfig) {
   const key = prop_('GEMINI_API_KEY', '');
   if (!key) throw appErr_('サーバーにGEMINI_API_KEYが設定されていません。');
   const model = prop_('GEMINI_MODEL', 'gemini-2.5-flash');
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
   const body = {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: 'user', parts: [{ text: user }] }],
-    generationConfig: { temperature: 0.9, maxOutputTokens: 2048 }
+    contents: [{ role: 'user', parts: parts }],
+    generationConfig: generationConfig
   };
   const res = UrlFetchApp.fetch(url, {
     method: 'post', contentType: 'application/json',
@@ -530,8 +536,94 @@ function gemini_(system, user) {
   const json = JSON.parse(res.getContentText() || '{}');
   if (code !== 200) throw appErr_('Gemini APIエラー（' + code + '）：' + ((json.error && json.error.message) || ''));
   const cand = json.candidates && json.candidates[0];
-  const parts = (cand && cand.content && cand.content.parts) || [];
-  return parts.filter(p => p.text && !p.thought).map(p => p.text).join('');
+  const out = (cand && cand.content && cand.content.parts) || [];
+  return out.filter(p => p.text && !p.thought).map(p => p.text).join('');
+}
+
+/* =========================================================
+ * 音声・ひとこと登録：話した／書いた文からミッション1件を読み取る
+ * ========================================================= */
+const PARSE_SYSTEM = [
+  'あなたはタスク管理アプリの入力アシスタントです。利用者が話した、または書いた日本語から、登録するタスク（ミッション）1件の内容を読み取り、JSONだけを返します。',
+  '',
+  'JSONの形：',
+  '{"transcript":"音声なら聞き取った文、文字入力なら入力そのまま","title":"","category":"","startDate":"YYYY-MM-DD または空","deadline":"YYYY-MM-DDTHH:MM または空","status":"未着手|進行中|保留","nextAction":"","ballHolder":"me|other","waiters":[{"name":"","dept":"","due":"YYYY-MM-DD または空"}]}',
+  '',
+  'ルール：',
+  '- title は20字程度までの短い名詞句にする（例：町内会だより原稿）。',
+  '- 日付は必ず与えられたカレンダー表で計算する。曜日を間違えない。',
+  '- 「今日中」は今日の23:59。時刻の指定がなければ23:59。「朝」は9:00、「昼」は12:00、「夕方」は17:00、「夜」は20:00。',
+  '- 「今週中」はその週の金曜、「週末」はその週の日曜、「月末」はその月の最終日、「来週◯曜」は次の週の該当曜日、「◯日後」は今日から数える。',
+  '- 締め切りに触れていなければ deadline は空。「明日から」「来週から」など始める日の言及があれば startDate。',
+  '- 「◯◯さんの返事待ち」「◯◯さんに確認中」「◯◯さんに頼んでいる」など相手の対応を待っているなら ballHolder を other にし、その相手を waiters に入れる。返事の期日の言及があれば due。',
+  '- 「もう始めている」「作業中」なら status を進行中、「保留」「止まっている」なら保留、それ以外は未着手。',
+  '- 次にやる具体的な行動が分かれば nextAction に短く書く。',
+  '- category は既存の分類に合うものがあればそれを使い、なければ短い分類名（仕事、町内会、家族など）か空。',
+  '- 分からない項目は空文字。人名や日付を推測で作らない。'
+].join('\n');
+
+function apiParseTask_(req, s) {
+  const text = String(req.text || '').trim().slice(0, 1000);
+  const audio = String(req.audio || '');
+  const mime = String(req.mime || '').split(';')[0];
+  if (!text && !audio) throw appErr_('登録する内容を話すか、入力してください。');
+  if (audio && !/^audio\//.test(mime)) throw appErr_('音声の形式が正しくありません。');
+  if (audio.length > 8 * 1024 * 1024) throw appErr_('録音が長すぎます。1分以内でお願いします。');
+  checkRate_(s.email, 'pt', PARSE_DAILY_LIMIT, '音声・ひとこと登録');
+
+  const cats = [];
+  readAll_(DEF.TASKS).forEach(t => {
+    if (t.email === s.email && t.category && cats.indexOf(t.category) < 0 && cats.length < 30) cats.push(t.category);
+  });
+  const W = ['日', '月', '火', '水', '木', '金', '土'];
+  const base = new Date();
+  const cal = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(base.getTime() + i * 86400000);
+    const ds = Utilities.formatDate(d, tz_(), 'yyyy-MM-dd');
+    const w = W[Number(Utilities.formatDate(d, tz_(), 'u')) % 7];
+    cal.push(ds + '(' + w + ')' + (i === 0 ? ' ←今日' : ''));
+  }
+  const prompt = [
+    '現在時刻：' + Utilities.formatDate(base, tz_(), 'yyyy-MM-dd HH:mm'),
+    'カレンダー表（今日から6週間）：',
+    cal.join('\n'),
+    '既存の分類：' + (cats.length ? cats.join('、') : 'なし'),
+    text ? '入力文：' + text : '入力：添付の音声を聞き取って使う'
+  ].join('\n');
+
+  const parts = [{ text: prompt }];
+  if (audio) parts.push({ inlineData: { mimeType: mime, data: audio } });
+  const raw = geminiCall_(PARSE_SYSTEM, parts, { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: 'application/json' });
+
+  let j;
+  try { j = JSON.parse(String(raw).replace(/```json|```/g, '').trim()); }
+  catch (e) { throw appErr_('内容を読み取れませんでした。もう少し具体的に話してみてください。'); }
+
+  const str = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+  const okDate = v => /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+  let deadline = str(j.deadline, 16).replace(' ', 'T');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(deadline)) deadline += 'T23:59';
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(deadline)) deadline = '';
+  let startDate = okDate(str(j.startDate, 10));
+  if (startDate && deadline && startDate > deadline.slice(0, 10)) startDate = '';
+  const waiters = (Array.isArray(j.waiters) ? j.waiters : []).slice(0, MAX_WAITERS)
+    .map(w => ({ name: str(w && w.name, 40), dept: str(w && w.dept, 40), contact: '', due: okDate(str(w && w.due, 10)), replied: false }))
+    .filter(w => w.name);
+
+  const task = {
+    title: str(j.title, 80) || str(j.transcript, 40) || text.slice(0, 40),
+    category: str(j.category, 20),
+    startDate: startDate,
+    deadline: deadline,
+    status: ['未着手', '進行中', '保留'].indexOf(j.status) >= 0 ? j.status : '未着手',
+    nextAction: str(j.nextAction, 300),
+    ballHolder: waiters.length ? 'other' : 'me',
+    waiters: waiters,
+    links: [],
+    shots: []
+  };
+  return { task: task, transcript: str(j.transcript, 1000) || text };
 }
 
 /** TTSに渡す前の最終クリーニング：前置き・ラベル・演出指示・記号を除去 */
@@ -603,11 +695,11 @@ function saveAudio_(wavBytes, email, type) {
   return file.getId();
 }
 
-function checkRate_(email) {
+function checkRate_(email, kind, limit, label) {
   const cache = CacheService.getScriptCache();
-  const key = 'nr_' + safeName_(email) + '_' + today_();
+  const key = kind + '_' + safeName_(email) + '_' + today_();
   const n = Number(cache.get(key) || 0);
-  if (n >= NARRATE_DAILY_LIMIT) throw appErr_('今日の実況は上限（' + NARRATE_DAILY_LIMIT + '回）に達しました。また明日どうぞ。');
+  if (n >= limit) throw appErr_('今日の' + label + 'は上限（' + limit + '回）に達しました。また明日どうぞ。');
   cache.put(key, String(n + 1), 21600);
 }
 
@@ -620,6 +712,7 @@ function cleanTask_(t) {
     title: s(t.title).slice(0, 80),
     category: s(t.category).slice(0, 20),
     deadline: s(t.deadline).slice(0, 16),
+    startDate: s(t.startDate).slice(0, 10),
     status: STATUSES.indexOf(t.status) >= 0 ? t.status : '未着手',
     nextAction: s(t.nextAction).slice(0, 300),
     ballHolder: t.ballHolder === 'other' ? 'other' : 'me',
@@ -661,6 +754,8 @@ function cleanTask_(t) {
   o.shots = JSON.stringify(shots);
   if (!o.title) throw appErr_('ミッション名を入力してください。');
   if (o.deadline && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(o.deadline)) throw appErr_('締め切りの日時の形式が正しくありません。');
+  if (o.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(o.startDate)) throw appErr_('開始日の形式が正しくありません。');
+  if (o.startDate && o.deadline && o.startDate > o.deadline.slice(0, 10)) throw appErr_('開始日が締め切りより後になっています。');
   if (o.ballHolder === 'other' && !waiters.length) throw appErr_('返事を待っている相手を1人以上入力してください。');
   return o;
 }

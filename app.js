@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔～タスク管理 — app.js v1.2.1（返事待ちの複数人・確認先URL・確認先スクショ）
+   ボール管制塔～タスク管理 — app.js v1.3.0（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
    認証 / 案内板描画 / ボール所在 / 本日の記録 / XP・階級
    実況（Gemini + TTS 再生）/ Google Earth Studio 映像演出
    ========================================================= */
@@ -11,7 +11,8 @@
   const WARN_H = Number(CFG.DEADLINE_WARN_HOURS || 48);
   const LS = {
     token: 'bk_token', gas: 'bk_gas_url', voice: 'bk_voice', bg: 'bk_bg',
-    auto: 'bk_auto_narrate', onboard: 'bk_onboarded'
+    auto: 'bk_auto_narrate', onboard: 'bk_onboarded',
+    view: 'bk_view', zoom: 'bk_zoom'
   };
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -306,7 +307,7 @@
   }
 
   function renderAll() {
-    renderBoard();
+    renderMain();
     renderCourt();
     renderToday();
     renderRank();
@@ -615,6 +616,505 @@
     toast('最終案内・遅延の便が ' + urgent.length + '件あります。', { label: '最終案内を聞く', run: () => narrate('deadline') });
   }
 
+  /* ---------------- 日付ユーティリティ ---------------- */
+  const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  const dateOnly = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const dayDiff = (a, b) => Math.round((dateOnly(b) - dateOnly(a)) / 86400000);
+  const mdw = d => (d.getMonth() + 1) + '/' + d.getDate() + '(' + WD[d.getDay()] + ')';
+
+  function quickDate(key) {
+    const d = dateOnly(new Date());
+    const dow = d.getDay();
+    switch (key) {
+      case 'today': return d;
+      case 'tomorrow': return addDays(d, 1);
+      case 'dayafter': return addDays(d, 2);
+      case 'fri': return addDays(d, (5 - dow + 7) % 7);
+      case 'weekend': return addDays(d, (7 - dow) % 7);
+      case 'nextmon': return addDays(d, ((8 - dow) % 7) || 7);
+      case 'week': return addDays(d, 7);
+      case 'monthend': return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      default: return d;
+    }
+  }
+
+  function updateDuePreview() {
+    const f = $('#taskForm');
+    const v = f.elements.deadline.value;
+    const p = $('#duePreview');
+    if (!v) { p.textContent = '締め切りなし'; p.className = 'due-preview'; return; }
+    const d = parseDT(v);
+    const h = hoursLeft(v);
+    p.textContent = mdw(d) + ' ' + v.slice(11, 16) + '　' + fmtLeft(h);
+    p.className = 'due-preview' + (h < 0 ? ' late' : h <= WARN_H ? ' soon' : '');
+  }
+
+  function bindDateChips() {
+    const f = $('#taskForm');
+    f.addEventListener('click', e => {
+      const b = e.target.closest('[data-due],[data-time],[data-shift],[data-start]');
+      if (!b || !f.contains(b)) return;
+      const cur = f.elements.deadline.value;
+      const curDate = cur ? cur.slice(0, 10) : '';
+      const curTime = cur ? cur.slice(11, 16) : '23:59';
+      if (b.dataset.start) {
+        f.elements.startDate.value = b.dataset.start === 'clear' ? '' : ymd(quickDate(b.dataset.start));
+        return;
+      }
+      if (b.dataset.due === 'clear') f.elements.deadline.value = '';
+      else if (b.dataset.due) f.elements.deadline.value = ymd(quickDate(b.dataset.due)) + 'T' + curTime;
+      else if (b.dataset.time) f.elements.deadline.value = (curDate || todayStr()) + 'T' + b.dataset.time;
+      else if (b.dataset.shift) {
+        const base = curDate ? parseDT(curDate) : dateOnly(new Date());
+        f.elements.deadline.value = ymd(addDays(base, Number(b.dataset.shift))) + 'T' + curTime;
+      }
+      updateDuePreview();
+    });
+    f.elements.deadline.addEventListener('input', updateDuePreview);
+  }
+
+  /* ---------------- 音声・ひとこと登録 ---------------- */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const voice = { rec: null, media: null, active: false, timer: 0, useRecorder: !SR };
+
+  function setQuickStatus(msg, busy) {
+    const p = $('#quickStatus');
+    p.textContent = msg || '';
+    p.classList.toggle('busy', !!busy);
+    $('#btnQuick').disabled = !!busy;
+  }
+
+  function voiceUI(on, msg) {
+    voice.active = on;
+    const b = $('#btnVoice');
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+    b.setAttribute('aria-label', on ? '話し終わったら押してください' : '声でミッションを登録');
+    if (msg !== undefined) setQuickStatus(msg);
+  }
+
+  async function toggleVoice() {
+    if (voice.active) { stopVoice(); return; }
+    unlockAudio();
+    stopAudio();
+    if (voice.useRecorder) await startRecording(); else startRecognition();
+  }
+
+  function startRecognition() {
+    let finalText = '';
+    let failed = false;
+    const rec = new SR();
+    rec.lang = 'ja-JP';
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript; else interim += r[0].transcript;
+      }
+      $('#quickText').value = finalText + interim;
+    };
+    rec.onerror = e => {
+      failed = true;
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setQuickStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。');
+      } else if (e.error === 'no-speech') {
+        setQuickStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。');
+      } else if (e.error === 'network' || e.error === 'audio-capture') {
+        voice.useRecorder = true;
+        setQuickStatus('この端末の音声認識が使えないため、録音してAIで聞き取る方式に切り替えました。もう一度マイクを押してください。');
+      }
+    };
+    rec.onend = () => {
+      voice.rec = null;
+      voiceUI(false);
+      const text = $('#quickText').value.trim();
+      if (!failed && text) parseAndOpen({ text: text });
+      else if (!failed) setQuickStatus('');
+    };
+    voice.rec = rec;
+    $('#quickText').value = '';
+    try {
+      rec.start();
+      voiceUI(true, '聞いています… 話し終わると自動で読み取ります');
+    } catch (err) {
+      voice.useRecorder = true;
+      startRecording();
+    }
+  }
+
+  async function startRecording() {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setQuickStatus('このブラウザでは音声入力が使えません。文字で入力してください。');
+      return;
+    }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { setQuickStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。'); return; }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+      .find(m => window.MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+    const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = async () => {
+      clearTimeout(voice.timer);
+      stream.getTracks().forEach(t => t.stop());
+      voice.media = null;
+      voiceUI(false);
+      const blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
+      if (blob.size < 2000) { setQuickStatus('録音が短すぎました。もう一度どうぞ。'); return; }
+      const b64 = await blobToBase64(blob);
+      parseAndOpen({ audio: b64, mime: (blob.type || 'audio/webm').split(';')[0] });
+    };
+    voice.media = mr;
+    mr.start();
+    voiceUI(true, '録音中… 話し終わったらもう一度マイクを押してください（最長1分）');
+    voice.timer = setTimeout(stopVoice, 60000);
+  }
+
+  function stopVoice() {
+    if (voice.rec) { try { voice.rec.stop(); } catch (e) { /* noop */ } }
+    if (voice.media && voice.media.state !== 'inactive') voice.media.stop();
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1] || '');
+      r.onerror = () => reject(new Error('音声を読み込めませんでした。'));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  async function parseAndOpen(payload) {
+    setQuickStatus('AIが内容を読み取っています…', true);
+    try {
+      const r = await api('parseTask', payload);
+      setQuickStatus('');
+      $('#quickText').value = '';
+      openTaskDialog(null, r.task);
+      const said = r.transcript ? '「' + r.transcript.slice(0, 60) + (r.transcript.length > 60 ? '…' : '') + '」から' : '';
+      const note = $('#parseNote');
+      note.textContent = said + 'AIが読み取りました。内容を確かめて「保存」を押してください。';
+      note.hidden = false;
+    } catch (err) {
+      setQuickStatus(err.message);
+    } finally {
+      $('#btnQuick').disabled = false;
+      $('#quickStatus').classList.remove('busy');
+    }
+  }
+
+  /* ---------------- 表示の切り替え（案内板／工程表） ---------------- */
+  function viewMode() { return store(LS.view) === 'gantt' ? 'gantt' : 'board'; }
+
+  function renderMain() {
+    const g = viewMode() === 'gantt';
+    $('#boardCols').hidden = g;
+    $('#boardList').hidden = g;
+    $('#gantt').hidden = !g;
+    $('#ganttTools').hidden = !g;
+    $$('[data-view-mode]').forEach(b => {
+      const on = b.dataset.viewMode === viewMode();
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+    if (g) renderGantt(); else renderBoard();
+  }
+
+  /* ---------------- 工程表（ガントチャート） ---------------- */
+  const gantt = { drag: null, collapsed: new Set(), first: true };
+  /** 表示幅：選んでいなければ、スマホは「週」、パソコンは「日」 */
+  const zoomMode = () => store(LS.zoom) || (window.innerWidth < 640 ? 'week' : 'day');
+  const dayW = () => (zoomMode() === 'week' ? 16 : 36);
+  function syncZoomButtons() {
+    $$('[data-zoom]').forEach(b => { const on = b.dataset.zoom === zoomMode(); b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+  }
+
+  function taskSpan(t) {
+    const end = t.deadline ? dateOnly(parseDT(t.deadline)) : null;
+    let start = t.startDate ? dateOnly(parseDT(t.startDate))
+      : (t.createdAt ? dateOnly(parseDT(t.createdAt)) : (end || dateOnly(new Date())));
+    if (end && start > end) start = end;
+    return { start: start, end: end || start, noDeadline: !end };
+  }
+
+  function renderGantt() {
+    const wrap = $('#gantt');
+    const empty = $('#boardEmpty');
+    const tasks = filteredTasks();
+    if (!tasks.length) {
+      wrap.innerHTML = '';
+      empty.hidden = false;
+      empty.textContent = '工程表に表示する便はありません。上のマイクか「手入力で登録」から登録しましょう。';
+      return;
+    }
+    empty.hidden = true;
+
+    const W = dayW();
+    const today = dateOnly(new Date());
+    const spans = {};
+    let min = addDays(today, -7);
+    let max = addDays(today, 35);
+    tasks.forEach(t => {
+      const sp = taskSpan(t);
+      spans[t.taskId] = sp;
+      if (sp.start < min) min = addDays(sp.start, -3);
+      if (sp.end > max) max = addDays(sp.end, 7);
+      pendingOf(t).forEach(w => { const d = w.due && parseDT(w.due); if (d && d > max) max = addDays(d, 3); });
+    });
+    if (dayDiff(min, max) > 300) min = addDays(max, -300);
+    const days = dayDiff(min, max) + 1;
+    const x = d => dayDiff(min, d) * W;
+    const codes = flightCodes();
+
+    // 見出し（月／日）
+    let months = '';
+    let dayCells = '';
+    for (let i = 0; i < days; i++) {
+      const d = addDays(min, i);
+      if (i === 0 || d.getDate() === 1) {
+        months += '<span class="g-month" style="left:' + (i * W) + 'px">' + d.getFullYear() + '年' + (d.getMonth() + 1) + '月</span>';
+      }
+      const cls = 'g-day' + (d.getDay() === 0 ? ' sun' : d.getDay() === 6 ? ' sat' : '') + (dayDiff(today, d) === 0 ? ' is-today' : '');
+      const label = W >= 30 ? '<b>' + d.getDate() + '</b><i>' + WD[d.getDay()] + '</i>'
+        : (d.getDay() === 1 || d.getDate() === 1 ? '<b>' + d.getDate() + '</b>' : '');
+      dayCells += '<span class="' + cls + '" style="left:' + (i * W) + 'px;width:' + W + 'px">' + label + '</span>';
+    }
+
+    // 背景（週末・今日）
+    let bg = '';
+    for (let i = 0; i < days; i++) {
+      const d = addDays(min, i);
+      if (d.getDay() === 0 || d.getDay() === 6) bg += '<span class="g-wkend' + (d.getDay() === 0 ? ' sun' : '') + '" style="left:' + (i * W) + 'px;width:' + W + 'px"></span>';
+    }
+    bg += '<span class="g-today" style="left:' + (x(today) + W / 2) + 'px"></span>';
+
+    // 分類ごとにまとめる
+    const groups = [];
+    const byCat = {};
+    tasks.forEach(t => {
+      const c = t.category || '分類なし';
+      if (!byCat[c]) { byCat[c] = []; groups.push(c); }
+      byCat[c].push(t);
+    });
+    const logDates = {};
+    state.logs.forEach(l => { (logDates[l.taskId] = logDates[l.taskId] || new Set()).add(l.date); });
+
+    let rows = '';
+    groups.forEach(c => {
+      const list = byCat[c];
+      const gs = list.reduce((a, t) => (spans[t.taskId].start < a ? spans[t.taskId].start : a), spans[list[0].taskId].start);
+      const ge = list.reduce((a, t) => (spans[t.taskId].end > a ? spans[t.taskId].end : a), spans[list[0].taskId].end);
+      const closed = gantt.collapsed.has(c);
+      rows += '<div class="g-row g-group">'
+        + '<button type="button" class="g-name g-gname" data-group="' + esc(c) + '" aria-expanded="' + (!closed) + '">'
+        + '<span class="tri" aria-hidden="true">' + (closed ? '▶' : '▼') + '</span><b>' + esc(c) + '</b><small>' + list.length + '件</small></button>'
+        + '<div class="g-track"><span class="g-sum" style="left:' + x(gs) + 'px;width:' + ((dayDiff(gs, ge) + 1) * W) + 'px"></span></div></div>';
+      if (closed) return;
+
+      list.forEach(t => {
+        const sp = spans[t.taskId];
+        const st = boardStatus(t);
+        const left = x(sp.start);
+        const width = (dayDiff(sp.start, sp.end) + 1) * W;
+        const pen = pendingOf(t);
+        const all = waitersOf(t);
+        const ball = !isOpen(t) ? '着陸 ' + fmtDT(t.completedAt)
+          : pen.length ? (pen.length === 1 ? pen[0].name + 'の返事待ち' : '返事待ち ' + pen.length + '/' + all.length + '人')
+          : all.length ? '全員回答済み' : 'ボールは自分';
+        const label = (sp.noDeadline ? '締め切り未設定' : '〆' + fmtDT(t.deadline)) + '　' + st.label;
+        let marks = '';
+        const dues = Array.from(new Set(pen.map(w => w.due).filter(Boolean)));
+        dues.forEach(du => {
+          const d = parseDT(du);
+          if (d >= min && d <= max) {
+            const who = pen.filter(w => w.due === du).map(w => w.name);
+            marks += '<span class="g-wait' + (du < todayStr() ? ' over' : '') + '" style="left:' + (x(d) + W / 2) + 'px" title="' + esc(who.join('、') + 'の回答期日 ' + fmtD(du)) + '"></span>';
+          }
+        });
+        (logDates[t.taskId] || new Set()).forEach(ld => {
+          const d = parseDT(ld);
+          if (d >= min && d <= max) marks += '<i class="g-log" style="left:' + (x(d) + W / 2) + 'px" title="' + esc(fmtD(ld)) + 'に記録"></i>';
+        });
+        const drag = isOpen(t);
+        rows += '<div class="g-row g-task ' + st.cls + '" data-id="' + esc(t.taskId) + '">'
+          + '<button type="button" class="g-name" data-edit="' + esc(t.taskId) + '"><span class="g-code">' + esc(codes[t.taskId] || '') + '</span>'
+          + '<b>' + esc(t.title) + '</b><small class="' + (pen.length ? 'them' : '') + '">' + esc(ball) + '</small></button>'
+          + '<div class="g-track">'
+          + marks
+          + '<div class="g-bar ' + st.cls + (sp.noDeadline ? ' nodl' : '') + (drag ? ' can-drag' : '') + '" data-id="' + esc(t.taskId) + '" style="left:' + left + 'px;width:' + width + 'px" '
+          + 'role="button" tabindex="0" aria-label="' + esc(t.title + '　' + mdw(sp.start) + 'から' + (sp.noDeadline ? '締め切り未設定' : mdw(sp.end) + 'まで')) + '">'
+          + (drag ? '<span class="g-h l" data-h="start" aria-hidden="true"></span><span class="g-h r" data-h="end" aria-hidden="true"></span>' : '')
+          + '</div>'
+          + '<span class="g-label" style="left:' + (left + width + 6) + 'px">' + esc(label) + '</span>'
+          + '</div></div>';
+      });
+    });
+
+    const keepScroll = wrap.querySelector('.g-scroll');
+    const sl = keepScroll ? keepScroll.scrollLeft : null;
+    wrap.innerHTML = '<div class="g-scroll"><div class="g-inner' + (W < 30 ? ' narrow' : '') + '" style="--days-w:' + (days * W) + 'px">'
+      + '<div class="g-row g-head"><div class="g-name g-corner">ミッション</div><div class="g-track"><div class="g-months">' + months + '</div><div class="g-days">' + dayCells + '</div></div></div>'
+      + '<div class="g-body"><div class="g-bg" aria-hidden="true">' + bg + '</div>' + rows + '</div>'
+      + '</div></div>';
+    wrap.dataset.min = ymd(min);
+
+    const sc = wrap.querySelector('.g-scroll');
+    if (gantt.first || sl === null) {
+      gantt.first = false;
+      requestAnimationFrame(() => scrollGanttToToday(false));
+    } else {
+      sc.scrollLeft = sl;
+    }
+  }
+
+  function scrollGanttToToday(smooth) {
+    const sc = $('#gantt .g-scroll');
+    const min = $('#gantt').dataset.min;
+    if (!sc || !min) return;
+    const nameW = $('#gantt .g-corner').offsetWidth;
+    const left = dayDiff(parseDT(min), new Date()) * dayW() - (sc.clientWidth - nameW) * 0.25;
+    sc.scrollTo({ left: Math.max(0, left), behavior: smooth && !reduceMotion ? 'smooth' : 'auto' });
+  }
+
+  /** ドラッグ結果から新しい開始日・締め切りを計算 */
+  function shiftedDates(t, mode, delta) {
+    const sp = taskSpan(t);
+    let start = sp.start;
+    let end = sp.end;
+    if (mode === 'move') { start = addDays(start, delta); end = addDays(end, delta); }
+    if (mode === 'start') { start = addDays(start, delta); if (start > end) start = end; }
+    if (mode === 'end') { end = addDays(end, delta); if (end < start) end = start; }
+    const time = t.deadline ? t.deadline.slice(11, 16) : '23:59';
+    const out = { startDate: ymd(start) };
+    if (mode !== 'start' || t.deadline) out.deadline = ymd(end) + 'T' + time;
+    return out;
+  }
+
+  async function commitShift(t, patch) {
+    const before = { startDate: t.startDate || '', deadline: t.deadline || '' };
+    Object.assign(t, patch);
+    renderMain();
+    renderCourt();
+    try {
+      const r = await api('saveTask', { task: Object.assign({}, t) });
+      replaceTask(r.task);
+      renderMain();
+      renderCourt();
+      const sp = taskSpan(r.task);
+      toast('日程を変更しました：' + mdw(sp.start) + '〜' + (r.task.deadline ? mdw(sp.end) : '締め切りなし'), {
+        label: '元に戻す',
+        run: () => { const cur = findTask(t.taskId); if (cur) commitShift(cur, before); }
+      });
+    } catch (err) {
+      Object.assign(t, before);
+      renderMain();
+      toast(err.message);
+    }
+  }
+
+  function bindGantt() {
+    const wrap = $('#gantt');
+
+    wrap.addEventListener('click', e => {
+      const g = e.target.closest('[data-group]');
+      if (g) {
+        const c = g.dataset.group;
+        if (gantt.collapsed.has(c)) gantt.collapsed.delete(c); else gantt.collapsed.add(c);
+        renderGantt();
+        return;
+      }
+      const ed = e.target.closest('[data-edit]');
+      if (ed) { const t = findTask(ed.dataset.edit); if (t) openTaskDialog(t); }
+    });
+
+    wrap.addEventListener('keydown', e => {
+      const bar = e.target.closest('.g-bar');
+      if (!bar) return;
+      const t = findTask(bar.dataset.id);
+      if (!t) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTaskDialog(t); }
+      if (isOpen(t) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        commitShift(t, shiftedDates(t, e.shiftKey ? 'end' : 'move', e.key === 'ArrowLeft' ? -1 : 1));
+      }
+    });
+
+    wrap.addEventListener('pointerdown', e => {
+      const bar = e.target.closest('.g-bar');
+      if (!bar || e.button > 0) return;
+      const t = findTask(bar.dataset.id);
+      if (!t) return;
+      const h = e.target.closest('[data-h]');
+      gantt.drag = {
+        t: t, bar: bar, mode: h ? h.dataset.h : 'move', x0: e.clientX,
+        left0: bar.offsetLeft, width0: bar.offsetWidth, delta: 0, moved: false,
+        canDrag: isOpen(t), label: bar.parentElement.querySelector('.g-label'),
+        sc: wrap.querySelector('.g-scroll'), scroll0: wrap.querySelector('.g-scroll').scrollLeft
+      };
+      bar.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    wrap.addEventListener('pointermove', e => {
+      const d = gantt.drag;
+      if (!d) return;
+      // 端に近づいたら自動で横スクロール
+      const r = d.sc.getBoundingClientRect();
+      if (e.clientX > r.right - 30) d.sc.scrollLeft += 12;
+      if (e.clientX < r.left + 140 && d.sc.scrollLeft > 0) d.sc.scrollLeft -= 12;
+      const dx = e.clientX - d.x0 + (d.sc.scrollLeft - d.scroll0);
+      if (Math.abs(dx) > 5) d.moved = true;
+      if (!d.moved || !d.canDrag) return;
+      const W = dayW();
+      d.delta = Math.round(dx / W);
+      let left = d.left0;
+      let width = d.width0;
+      if (d.mode === 'move') left = d.left0 + d.delta * W;
+      if (d.mode === 'start') { left = Math.min(d.left0 + d.delta * W, d.left0 + d.width0 - W); width = d.width0 - (left - d.left0); }
+      if (d.mode === 'end') width = Math.max(W, d.width0 + d.delta * W);
+      d.bar.style.left = left + 'px';
+      d.bar.style.width = width + 'px';
+      d.bar.classList.add('dragging');
+      const nd = shiftedDates(d.t, d.mode, d.delta);
+      if (d.label) {
+        d.label.style.left = (left + width + 6) + 'px';
+        d.label.textContent = mdw(parseDT(nd.startDate)) + ' 〜 ' + (nd.deadline ? mdw(parseDT(nd.deadline)) : '締め切りなし');
+        d.label.classList.add('live');
+      }
+    });
+
+    const end = e => {
+      const d = gantt.drag;
+      if (!d) return;
+      gantt.drag = null;
+      try { d.bar.releasePointerCapture(e.pointerId); } catch (err) { /* noop */ }
+      if (!d.moved) { openTaskDialog(d.t); return; }
+      if (e.type === 'pointercancel' || !d.canDrag || d.delta === 0) { renderGantt(); return; }
+      commitShift(d.t, shiftedDates(d.t, d.mode, d.delta));
+    };
+    wrap.addEventListener('pointerup', end);
+    wrap.addEventListener('pointercancel', end);
+
+    $$('[data-view-mode]').forEach(b => b.addEventListener('click', () => {
+      store(LS.view, b.dataset.viewMode === 'gantt' ? 'gantt' : null);
+      state.animate = true;
+      gantt.first = true;
+      renderMain();
+    }));
+    $$('[data-zoom]').forEach(b => b.addEventListener('click', () => {
+      store(LS.zoom, b.dataset.zoom === 'week' ? 'week' : 'day');
+      syncZoomButtons();
+      gantt.first = true;
+      renderGantt();
+    }));
+    $('#btnToday').addEventListener('click', () => scrollGanttToToday(true));
+    syncZoomButtons();
+  }
+
   /* ---------------- ミッション編集 ---------------- */
   function syncWaitFields() {
     const f = $('#taskForm');
@@ -821,18 +1321,20 @@
     if (ids.length) api('discardShots', { fileIds: ids }).catch(() => {});
   }
 
-  function openTaskDialog(t) {
+  function openTaskDialog(t, preset) {
     const f = $('#taskForm');
     f.reset();
     formMsg(f, '');
     const isNew = !t;
+    $('#parseNote').hidden = true;
     $('#taskDialogTitle').textContent = isNew ? 'ミッションを登録' : 'ミッションを編集';
     $('#taskDelete').hidden = isNew;
-    const v = t || { status: '未着手', ballHolder: 'me' };
-    ['taskId', 'title', 'category', 'deadline', 'status', 'nextAction']
+    const v = t || Object.assign({ status: '未着手', ballHolder: 'me' }, preset || {});
+    ['taskId', 'title', 'category', 'deadline', 'startDate', 'status', 'nextAction']
       .forEach(k => { f.elements[k].value = v[k] || (k === 'status' ? '未着手' : ''); });
+    updateDuePreview();
     $$('input[name="ballHolder"]', f).forEach(r => { r.checked = r.value === (v.ballHolder === 'other' ? 'other' : 'me'); });
-    state.form.waiters = (v.waiters || []).map(w => Object.assign({ dept: '', contact: '', due: '', replied: false }, w));
+    state.form.waiters = (v.waiters || []).map(w => Object.assign({ dept: '', contact: '', due: '', replied: false }, w, { id: w.id || newId() }));
     state.form.links = (v.links || []).map(l => Object.assign({}, l));
     state.form.shots = (v.shots || []).map(x => Object.assign({}, x));
     state.form.newShots = [];
@@ -852,7 +1354,7 @@
   function readTaskForm() {
     const f = $('#taskForm');
     const o = {};
-    ['taskId', 'title', 'category', 'deadline', 'status', 'nextAction'].forEach(k => { o[k] = f.elements[k].value.trim(); });
+    ['taskId', 'title', 'category', 'deadline', 'startDate', 'status', 'nextAction'].forEach(k => { o[k] = f.elements[k].value.trim(); });
     o.ballHolder = f.elements.ballHolder.value === 'other' ? 'other' : 'me';
     o.waiters = state.form.waiters
       .map(w => ({ id: w.id || newId(), name: w.name.trim(), dept: w.dept.trim(), contact: w.contact.trim(), due: w.due, replied: !!w.replied }))
@@ -989,6 +1491,7 @@
     if (state.form.uploading > 0) { formMsg(f, 'スクリーンショットを送信中です。終わってから保存してください。'); return; }
     const data = readTaskForm();
     if (!data.title) { formMsg(f, 'ミッション名を入力してください。'); return; }
+    if (data.startDate && data.deadline && data.startDate > data.deadline.slice(0, 10)) { formMsg(f, '開始日が締め切りより後になっています。'); return; }
     if (data.ballHolder === 'other' && !data.waiters.length) { formMsg(f, '返事を待っている相手を1人以上入力してください。'); return; }
     const badUrl = data.links.find(l => !/^https?:\/\/\S+$/i.test(l.url));
     if (badUrl) { formMsg(f, '確認先のURLは https:// で始まる形で入力してください：' + badUrl.url); return; }
@@ -1291,6 +1794,15 @@
   /* ---------------- イベント配線 ---------------- */
   function bindApp() {
     $('#btnAdd').addEventListener('click', () => openTaskDialog(null));
+    $('#btnVoice').addEventListener('click', toggleVoice);
+    $('#quickAdd').addEventListener('submit', e => {
+      e.preventDefault();
+      const text = $('#quickText').value.trim();
+      if (!text) { setQuickStatus('マイクを押して話すか、ひとこと入力してください。'); $('#quickText').focus(); return; }
+      parseAndOpen({ text: text });
+    });
+    bindGantt();
+    bindDateChips();
     $('#btnNarrate').addEventListener('click', () => narrate('briefing'));
 
     $('#boardList').addEventListener('click', e => {
@@ -1312,7 +1824,7 @@
         x.setAttribute('aria-pressed', String(x === b));
       });
       state.animate = true;
-      renderBoard();
+      renderMain();
     }));
 
     $('#ballThem').addEventListener('click', e => {
@@ -1371,7 +1883,7 @@
     // 1分ごとに時計と残り時間を更新（めくり演出なし）
     setInterval(() => {
       updateClock();
-      if (!$('#appView').hidden) { renderBoard(); renderCourt(); }
+      if (!$('#appView').hidden && !gantt.drag) { renderMain(); renderCourt(); }
     }, 60000);
   }
 

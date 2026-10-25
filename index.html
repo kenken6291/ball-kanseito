@@ -120,6 +120,15 @@
       <time class="board-clock" id="clock">--:--</time>
     </div>
 
+    <!-- 音声・ひとこと登録 -->
+    <form id="quickAdd" class="quick-add" novalidate>
+      <button type="button" id="btnVoice" class="mic" aria-label="声でミッションを登録" aria-pressed="false"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></svg></button>
+      <input type="text" id="quickText" maxlength="1000" autocomplete="off"
+        placeholder="話すか書くだけで登録：例「金曜までに町内会だよりの原稿、佐藤さんの写真待ち」" aria-label="ひとことで登録">
+      <button type="submit" class="btn amber" id="btnQuick">登録</button>
+    </form>
+    <p class="quick-status" id="quickStatus" aria-live="polite"></p>
+
     <div class="board-tools">
       <div class="seg" role="group" aria-label="表示する便">
         <button type="button" class="on" data-filter="all" aria-pressed="true">運航中</button>
@@ -127,10 +136,24 @@
         <button type="button" data-filter="them" aria-pressed="false">相手の返事待ち</button>
         <button type="button" data-filter="done" aria-pressed="false">着陸済み</button>
       </div>
-      <button id="btnAdd" class="btn amber" type="button">＋ ミッションを登録</button>
+      <div class="view-tabs" role="group" aria-label="表示の切り替え">
+        <button type="button" data-view-mode="board" aria-pressed="true" class="on">案内板</button>
+        <button type="button" data-view-mode="gantt" aria-pressed="false">工程表</button>
+      </div>
+      <button id="btnAdd" class="btn ghost-dark" type="button">＋ 手入力で登録</button>
     </div>
 
-    <div class="board-cols" aria-hidden="true">
+    <div class="gantt-tools" id="ganttTools" hidden>
+      <div class="seg small" role="group" aria-label="表示の幅">
+        <button type="button" data-zoom="day" aria-pressed="true" class="on">日</button>
+        <button type="button" data-zoom="week" aria-pressed="false">週</button>
+      </div>
+      <button type="button" class="btn ghost-dark small" id="btnToday">今日へ</button>
+      <p class="gantt-hint">バーをドラッグで日程を移動、両端をドラッグで開始日・締め切りを変更、タップで編集</p>
+    </div>
+    <div id="gantt" class="gantt" hidden></div>
+
+    <div class="board-cols" id="boardCols" aria-hidden="true">
       <span>便名</span><span>ミッション</span><span>締め切り</span><span>ボール</span><span>状況</span><span></span>
     </div>
     <ol id="boardList" class="board-list"></ol>
@@ -199,6 +222,7 @@
 <dialog id="taskDialog" class="dlg wide">
   <form method="dialog" id="taskForm" novalidate>
     <h2 id="taskDialogTitle">ミッションを登録</h2>
+    <p class="parse-note" id="parseNote" hidden></p>
     <input type="hidden" name="taskId">
     <label class="field">ミッション名
       <input type="text" name="title" maxlength="80" required placeholder="例：町内会だよりの原稿">
@@ -208,18 +232,55 @@
         <input type="text" name="category" maxlength="20" list="catList" placeholder="例：町内会">
         <datalist id="catList"></datalist>
       </label>
-      <label class="field">締め切り
-        <input type="datetime-local" name="deadline">
+      <label class="field">状況
+        <select name="status">
+          <option value="未着手">搭乗待ち（未着手）</option>
+          <option value="進行中">飛行中（進行中）</option>
+          <option value="保留">待機旋回（保留）</option>
+          <option value="完了">着陸（完了）</option>
+        </select>
       </label>
     </div>
-    <label class="field">状況
-      <select name="status">
-        <option value="未着手">搭乗待ち（未着手）</option>
-        <option value="進行中">飛行中（進行中）</option>
-        <option value="保留">待機旋回（保留）</option>
-        <option value="完了">着陸（完了）</option>
-      </select>
-    </label>
+
+    <fieldset class="dates">
+      <legend>日程</legend>
+      <div class="date-line">
+        <label class="field">締め切り
+          <input type="datetime-local" name="deadline">
+        </label>
+        <p class="due-preview" id="duePreview"></p>
+      </div>
+      <div class="chips-row" role="group" aria-label="締め切りをすばやく設定">
+        <button type="button" data-due="today">今日中</button>
+        <button type="button" data-due="tomorrow">明日</button>
+        <button type="button" data-due="dayafter">明後日</button>
+        <button type="button" data-due="fri">今週金曜</button>
+        <button type="button" data-due="weekend">週末</button>
+        <button type="button" data-due="nextmon">来週月曜</button>
+        <button type="button" data-due="week">1週間後</button>
+        <button type="button" data-due="monthend">月末</button>
+      </div>
+      <div class="chips-row" role="group" aria-label="時刻と前後の調整">
+        <button type="button" data-time="09:00">9:00</button>
+        <button type="button" data-time="12:00">12:00</button>
+        <button type="button" data-time="17:00">17:00</button>
+        <button type="button" data-time="23:59">23:59</button>
+        <span class="sep" aria-hidden="true"></span>
+        <button type="button" data-shift="-1" aria-label="1日前にずらす">−1日</button>
+        <button type="button" data-shift="1" aria-label="1日後にずらす">＋1日</button>
+        <button type="button" data-due="clear">締め切りなし</button>
+      </div>
+      <div class="date-line start-line">
+        <label class="field">開始日（工程表のバーの始まり）
+          <input type="date" name="startDate">
+        </label>
+        <div class="chips-row" role="group" aria-label="開始日をすばやく設定">
+          <button type="button" data-start="today">今日から</button>
+          <button type="button" data-start="tomorrow">明日から</button>
+          <button type="button" data-start="clear">未設定</button>
+        </div>
+      </div>
+    </fieldset>
     <label class="field">次にやること
       <textarea name="nextAction" rows="2" maxlength="300" placeholder="例：写真を3枚選ぶ"></textarea>
     </label>
@@ -355,11 +416,12 @@
     <h2>ボール管制塔～タスク管理の使い方</h2>
     <p class="dlg-sub">抱えている用事を「便」として案内板に並べ、締め切りと返事待ちを見張ります。</p>
     <ol class="steps">
-      <li><b>ミッションを登録</b>「＋ ミッションを登録」から、名前・締め切り・次にやることを入れます。案内板に便として並びます。</li>
+      <li><b>ミッションを登録</b>マイクを押して「金曜までに町内会だよりの原稿、佐藤さんの写真待ち」のように話すだけ。AIが名前・締め切り・返事待ちの相手を読み取って入力欄を埋めます。文字で書いて「登録」でも同じです。締め切りは「明日」「今週金曜」などのボタンでも選べます。</li>
       <li><b>ボールの所在を決める</b>返事待ちなら「相手」を選び、待っている人を登録します。何人でも登録でき、「まとめて追加」で名簿を貼り付けることもできます。調整さんなど返事を確かめる場所のURLや、LINEなどのスクリーンショットも登録できます。</li>
       <li><b>回答をチェック</b>返事が来た人は「ボールの所在」で「回答済み」にチェック。全員そろうとボールが自分に戻ります。期日を過ぎた未回答の人には、催促メールの下書きをまとめて開けます。</li>
       <li><b>今日やったことを記録</b>便の「記録」から書くと +10 XP。搭乗待ちの便は自動で飛行中になります。</li>
       <li><b>着陸させる</b>終わったら「着陸」。+50 XP、締め切りに間に合えばさらに +30 XP と着陸映像。</li>
+      <li><b>工程表で日程を見る</b>「工程表」に切り替えると、ミッションが横長のバーで並びます。バーをドラッグすると日程ごと移動、右端で締め切り、左端で開始日を変えられます。</li>
       <li><b>実況を聞く</b>上の「管制塔の実況を聞く」で、AI管制官がいまの状況を読み上げます。</li>
     </ol>
     <h3>案内板の表示</h3>

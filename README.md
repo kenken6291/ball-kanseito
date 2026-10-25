@@ -1,4 +1,4 @@
-# ボール管制塔～タスク管理（ball-kanseito） v1.2.1
+# ボール管制塔～タスク管理（ball-kanseito） v1.3.0
 
 抱えている用事を「便」として発着案内板に並べ、締め切り・今日の成果・残り・**いま誰がボールを持っているか**を一目で見張るマルチタスク管理アプリ。完了は「着陸」、締め切り間近は「最終案内」、超過は「遅延」。AI管制官（Gemini）が状況を実況し、Gemini TTS で読み上げます。
 
@@ -16,6 +16,8 @@
   ├─ 認証：仮パスワード発行・強制変更・再発行・5回失敗で15分ロック
   │        SHA-256 × 300回（salt + pepper）／セッションは CacheService（6時間・アクセスで延長）
   ├─ CRUD：Tasks / Logs（スプレッドシート）
+  ├─ 音声・ひとこと登録：parseTask → Gemini が文（または録音音声）から名前・分類・開始日・締め切り・返事待ちの相手を JSON で返す。
+  │        日付の取り違え防止に、今日から6週間のカレンダー表を毎回プロンプトに渡す
   ├─ 実況：Gemini generateContent → 前置き除去クリーナー → テキスト
   ├─ 読み上げ：Gemini TTS（PCM）→ WAV 化 → Base64 でブラウザへ ＋ Drive/audio に保存
   ├─ スクショ：ブラウザで縮小（幅1280px・JPEG）→ Drive/shots に保存、表示時は getShot で本人だけ取得
@@ -37,7 +39,7 @@
 | シート | 列 |
 |---|---|
 | Users | email, nickname, salt, hash, mustChange, failCount, lockedUntil, createdAt, lastLogin |
-| Tasks | taskId, email, title, category, deadline(yyyy-MM-ddTHH:mm), status(未着手/進行中/保留/完了), nextAction, ballHolder(me/other), waitName・waitDept・waitContact・ballDue（v1.0の列。v1.1では未使用）, createdAt, updatedAt, completedAt, **waiters**, **links**, **shots** |
+| Tasks | taskId, email, title, category, deadline(yyyy-MM-ddTHH:mm), status(未着手/進行中/保留/完了), nextAction, ballHolder(me/other), waitName・waitDept・waitContact・ballDue（v1.0の列。v1.1では未使用）, createdAt, updatedAt, completedAt, **waiters**, **links**, **shots**, **startDate**(yyyy-MM-dd) |
 | Logs | logId, taskId, email, date(yyyy-MM-dd), text, createdAt |
 | Narrations | id, email, type(briefing/complete/deadline), text, audioFileId, createdAt |
 
@@ -46,6 +48,7 @@
 - **waiters**（JSON配列、最大200人）：`{id, name, dept, contact, due, replied}`。contact はメール・電話・URL のどれでも可。
 - **links**（JSON配列、最大10件）：`{label, url}`。label が空なら URL から「調整さん」「LINE」「Googleフォーム」などを自動判定。
 - **shots**（JSON配列、最大20枚）：`{fileId, label, at}`。LINEなどURLのない確認先のスクリーンショット。画像本体は Drive の「ボール管制塔_データ/shots」に非公開で保存し、ファイルの説明欄に持ち主（メールのハッシュ）を記録。本人以外は `getShot` で読めません。
+- **startDate**：工程表のバーの開始日。空のときは登録日から始まるバーとして表示。
 - ボールの判定：ballHolder=other かつ未回答（replied=false）が1人以上いれば「相手の手元」。全員回答済みになると自動で「自分の手元」に戻ります。
 - v1.0 で1人だけ登録していた返事待ちは、読み込み時に waiters へ自動移行されます。列の追加もサーバーが自動で行うので、setup() の再実行は不要です。
 
@@ -139,6 +142,7 @@ ball-kanseito/
 4. 「管制塔の実況を聞く」で Gemini と TTS の動作を確認。
 
 ### 更新履歴
+- v1.3.0：音声・ひとこと登録（マイクで話す／一文で書く → AIが入力欄を自動で埋める。音声認識が使えない端末は録音してGeminiで聞き取り）、締め切りの日付・時刻ボタン（今日中・明日・今週金曜・来週月曜・月末・±1日など）と開始日、工程表（ガントチャート：分類ごとの段・週末と今日の表示・返事の期日と記録の印・日／週の切り替え、バーのドラッグで日程移動・両端で開始日／締め切り変更・元に戻す、キーボードの←→でも移動）
 - v1.2.1：サイト名を「ボール管制塔～タスク管理」に変更
 - v1.2.0：返事の確認先にスクリーンショットを登録（LINEなどURLのない確認先用。ファイル選択・Ctrl+V貼り付け、拡大表示・前後送り・保存、保存しなかった画像やミッション削除時の画像は自動でゴミ箱へ）
 - v1.1.0：返事待ちを複数人に対応（まとめて追加・全員の期日・その場で回答済みチェック・BCCでまとめて催促）、返事の確認先URL（調整さん・LINEなど）を登録可能に

@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔 — style.css v1.2.0
+   ボール管制塔～タスク管理 — style.css v1.3.0
    主役は「発着案内板」。案内板は実物同様つねに紺の筐体＋琥珀のドット文字、
    まわりの紙面はライト／ダークに追従する。
    ========================================================= */
@@ -364,6 +364,7 @@ body.has-bg .bg-veil { background: var(--veil); }
 .dlg form { display: grid; gap: 14px; padding: 22px 20px 18px; }
 .dlg h2 { font-size: 1.25rem; }
 .dlg h3 { font-size: 1rem; margin-top: 4px; }
+.parse-note { margin: -4px 0 0; padding: 8px 12px; border-radius: var(--r-s); background: color-mix(in srgb, var(--amber) 22%, var(--surface)); font-size: .9rem; font-weight: 700; }
 .dlg-sub { margin: -6px 0 0; color: var(--muted); font-size: .92rem; }
 .dlg-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .dlg form > .dlg-actions { position: sticky; bottom: -18px; z-index: 2; background: var(--surface); margin: 0 -20px -18px; padding: 12px 20px 18px; border-top: 1px solid var(--line); }
@@ -400,7 +401,9 @@ body.has-bg .bg-veil { background: var(--veil); }
   display: flex; gap: 12px; align-items: center;
   box-shadow: 0 10px 30px -12px #0008;
 }
-.toast button { background: var(--amber); color: #1A1300; border: 0; border-radius: 7px; padding: .3em .8em; font-weight: 700; cursor: pointer; min-height: 34px; }
+.toast { width: max-content; }
+.toast > span { flex: 1 1 auto; }
+.toast button { white-space: nowrap; flex: none; background: var(--amber); color: #1A1300; border: 0; border-radius: 7px; padding: .3em .8em; font-weight: 700; cursor: pointer; min-height: 34px; }
 
 /* =========================================================
    レスポンシブ
@@ -432,7 +435,6 @@ body.has-bg .bg-veil { background: var(--veil); }
   .rank { min-width: 0; max-width: none; flex-basis: 100%; order: 3; }
   .xp-text { font-size: .8rem; }
   .board { padding: 14px 10px 16px; border-radius: var(--r-m); }
-  .board-tools .btn.amber { width: 100%; }
   .board-cols { display: none; }
   .row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
@@ -602,6 +604,156 @@ button.chip { font: inherit; font-size: .78rem; font-weight: 700; cursor: pointe
 .viewer-body > img, .viewer-body > .viewer-loading { grid-row: 1; grid-column: 1; }
 .viewer-foot { justify-content: space-between; font-size: .88rem; color: var(--board-muted); border-top: 1px solid #ffffff1a; }
 .viewer-foot a { color: var(--amber); font-weight: 700; }
+
+
+/* =========================================================
+   v1.3 音声・ひとこと登録／日程ボタン／工程表
+   ========================================================= */
+.btn.ghost-dark { background: transparent; color: var(--board-ink); border-color: #ffffff38; }
+.btn.ghost-dark:hover { border-color: #ffffff70; }
+
+/* --- 音声・ひとこと登録 --- */
+.quick-add { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 8px; margin-top: 14px; align-items: center; }
+.mic {
+  width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  border: 2px solid var(--amber); background: var(--slot); color: var(--amber);
+}
+.mic.on { background: var(--signal); border-color: var(--signal); color: #fff; animation: micPulse 1.4s ease-out infinite; }
+@keyframes micPulse { 0% { box-shadow: 0 0 0 0 #E2483D88; } 100% { box-shadow: 0 0 0 16px #E2483D00; } }
+.quick-add input {
+  width: 100%; min-height: 52px; padding: .55em .9em; border-radius: var(--r-m);
+  border: 1.5px solid #ffffff2e; background: var(--slot); color: #fff; font-size: 1rem; caret-color: var(--amber);
+}
+.quick-add input::placeholder { color: var(--board-muted); }
+.quick-add .btn { min-height: 52px; }
+.quick-status { min-height: 1.4em; margin: 6px 2px -6px; font-size: .88rem; color: var(--board-muted); }
+.quick-status.busy { color: var(--amber); }
+.quick-status.busy::after { content: "…"; display: inline-block; animation: blink 1s steps(2) infinite; }
+
+/* --- 表示切り替え --- */
+.view-tabs { display: flex; gap: 4px; background: var(--slot); padding: 4px; border-radius: var(--r-m); }
+.view-tabs button, .seg.small button {
+  border: 0; background: transparent; color: var(--board-muted); cursor: pointer; font-weight: 700;
+  padding: .4em 1em; min-height: 38px; border-radius: 7px; font-size: .9rem;
+}
+.view-tabs button.on { background: var(--amber); color: #1A1300; }
+.seg.small button.on { background: var(--housing-2); color: var(--amber); }
+.narrow .g-day { overflow: visible; justify-items: start; }
+.narrow .g-day b { white-space: nowrap; }
+.narrow .g-day.is-today { background: none; box-shadow: inset 0 -3px 0 var(--amber); border-radius: 0; }
+.board-tools { gap: 10px; }
+.board-tools .seg { flex: 1 1 auto; }
+
+/* --- 日程（編集画面） --- */
+.dates { border: 1.5px solid var(--line); border-radius: var(--r-m); padding: 10px 14px 14px; margin: 0; display: grid; gap: 10px; }
+.dates legend { font-size: .9rem; font-weight: 700; color: var(--muted); padding: 0 .3em; }
+.date-line { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: end; }
+.due-preview { margin: 0 0 10px; font-weight: 700; font-size: .95rem; }
+.due-preview.soon { color: #B57C0E; }
+.due-preview.late { color: var(--signal); }
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chips-row button {
+  min-height: 36px; padding: .2em .8em; border-radius: 99px; cursor: pointer; font-size: .86rem; font-weight: 700;
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--ink);
+}
+.chips-row button:hover { border-color: var(--ink); }
+.chips-row button:active { background: var(--amber); border-color: var(--amber); color: #1A1300; }
+.chips-row .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+.start-line { border-top: 1px dashed var(--line); padding-top: 10px; align-items: center; }
+
+/* --- 工程表 --- */
+.gantt-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.gantt-hint { margin: 0; font-size: .8rem; color: var(--board-muted); flex: 1 1 260px; }
+.gantt { --name-w: 230px; }
+.g-scroll { overflow: auto; max-height: 72vh; border-radius: var(--r-m); background: var(--slot); overscroll-behavior: contain; }
+.g-inner { position: relative; width: calc(var(--name-w) + var(--days-w)); }
+.g-row { display: flex; position: relative; min-height: 46px; border-bottom: 1px solid #ffffff10; }
+.g-name {
+  position: sticky; left: 0; z-index: 3; flex: none; width: var(--name-w);
+  display: grid; align-content: center; gap: 0; text-align: left;
+  padding: 4px 10px; border: 0; border-right: 1px solid #ffffff1a; background: var(--housing); color: var(--board-ink);
+  font: inherit; cursor: pointer; min-width: 0;
+}
+.g-name b { font-size: .9rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-name small { font-size: .74rem; color: var(--board-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-name small.them { color: var(--sky); }
+.g-code { font-family: var(--font-board); font-size: .72rem; color: var(--board-muted); }
+.g-track { position: relative; flex: none; width: var(--days-w); }
+
+.g-head { position: sticky; top: 0; z-index: 5; min-height: 54px; background: var(--housing-2); border-bottom: 1px solid #ffffff24; }
+.g-head .g-name { z-index: 6; background: var(--housing-2); cursor: default; font-size: .8rem; color: var(--board-muted); font-weight: 700; }
+.g-months { position: relative; height: 20px; }
+.g-month { position: absolute; top: 2px; padding-left: 5px; border-left: 1px solid #ffffff38; font-size: .72rem; color: var(--board-muted); white-space: nowrap; }
+.g-days { position: relative; height: 34px; }
+.g-day { position: absolute; top: 0; height: 34px; display: grid; justify-items: center; align-content: center; line-height: 1.1; font-size: .7rem; color: var(--board-ink); }
+.g-day b { font-family: var(--font-board); font-weight: 400; font-size: .82rem; }
+.g-day i { font-style: normal; font-size: .64rem; color: var(--board-muted); }
+.g-day.sat, .g-day.sat i { color: var(--sky); }
+.g-day.sun, .g-day.sun i { color: #FF7A70; }
+.g-day.is-today { background: var(--amber); color: #1A1300; border-radius: 4px; }
+.g-day.is-today i { color: #1A1300; }
+
+.g-body { position: relative; }
+.g-bg { position: absolute; top: 0; bottom: 0; left: var(--name-w); width: var(--days-w); pointer-events: none; }
+.g-wkend { position: absolute; top: 0; bottom: 0; background: #ffffff07; }
+.g-wkend.sun { background: #E2483D12; }
+.g-today { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--amber); opacity: .75; }
+
+.g-group { min-height: 40px; background: #ffffff05; }
+.g-gname { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.g-gname .tri { font-size: .7rem; color: var(--amber); }
+.g-gname small { font-size: .74rem; }
+.g-sum { position: absolute; top: calc(50% - 3px); height: 6px; border-radius: 3px; background: #ffffff45; }
+.g-sum::before, .g-sum::after { content: ""; position: absolute; top: -3px; width: 8px; height: 8px; background: #ffffffa0; transform: rotate(45deg); }
+.g-sum::before { left: -4px; }
+.g-sum::after { right: -4px; }
+
+.g-bar {
+  position: absolute; top: calc(50% - 11px); height: 22px; border-radius: 6px; z-index: 2;
+  background: var(--amber); color: var(--amber); touch-action: none; user-select: none; -webkit-user-select: none;
+  box-shadow: inset 0 -3px 0 #00000030;
+}
+.g-bar.can-drag { cursor: grab; }
+.g-bar.dragging { cursor: grabbing; outline: 2px solid #fff; z-index: 4; box-shadow: 0 6px 16px -4px #000a; }
+.g-bar:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+.g-bar.st-wait { background: #8797B2; color: #8797B2; }
+.g-bar.st-fly { background: var(--amber); }
+.g-bar.st-hold { background: var(--hold); color: var(--hold); }
+.g-bar.st-final { background: repeating-linear-gradient(135deg, var(--amber) 0 8px, #E9A62A 8px 16px); }
+.g-bar.st-late { background: var(--signal); color: var(--signal); }
+.g-bar.st-done { background: var(--green); color: var(--green); opacity: .7; }
+.g-bar.nodl { background: transparent; border: 2px dashed currentColor; box-shadow: none; }
+.g-h { position: absolute; top: -2px; bottom: -2px; width: 12px; cursor: ew-resize; touch-action: none; }
+.g-h.l { left: -5px; }
+.g-h.r { right: -5px; }
+.g-h::after { content: ""; position: absolute; top: 6px; bottom: 6px; left: 5px; width: 2px; border-radius: 1px; background: #1A130066; }
+.g-label { position: absolute; top: calc(50% - 9px); z-index: 1; font-size: .74rem; color: var(--board-muted); white-space: nowrap; pointer-events: none; }
+.g-label.live { color: #fff; font-weight: 700; background: var(--housing-2); padding: 0 .4em; border-radius: 4px; }
+.g-wait { position: absolute; top: calc(50% - 19px); z-index: 3; width: 11px; height: 11px; margin-left: -5.5px; border-radius: 50%; border: 2px solid var(--sky); background: var(--slot); }
+.g-wait.over { border-color: var(--signal); }
+.g-log { position: absolute; bottom: 3px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--board-ink); opacity: .55; }
+
+@media (pointer: coarse) {
+  .g-h { width: 22px; }
+  .g-h.l { left: -10px; }
+  .g-h.r { right: -10px; }
+  .g-bar { height: 26px; top: calc(50% - 13px); }
+}
+
+@media (max-width: 640px) {
+  .quick-add { grid-template-columns: 52px minmax(0, 1fr); }
+  .quick-add .btn { grid-column: 1 / -1; min-height: 44px; }
+  .mic { width: 52px; height: 52px; }
+  .board-tools .seg { order: 2; flex-basis: 100%; }
+  .view-tabs { order: 1; flex: 1; }
+  .view-tabs button { flex: 1; }
+  .board-tools .btn.ghost-dark { order: 1; }
+  .gantt { --name-w: 132px; }
+  .g-name { padding: 4px 6px; }
+  .g-code { display: none; }
+  .date-line { grid-template-columns: 1fr; gap: 4px; }
+  .due-preview { margin: 0; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
