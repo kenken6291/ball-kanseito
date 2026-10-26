@@ -9,7 +9,7 @@
  * ※コードを変更したら「デプロイを管理」→ 編集 → バージョン「新バージョン」で再デプロイ（URLはそのまま）
  */
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.2';
 const APP_NAME = 'ボール管制塔～タスク管理';   // メール件名・本文に表示
 
 const DEF = {
@@ -99,6 +99,7 @@ function doPost(e) {
     uploadShot: apiUploadShot_,
     getShot: apiGetShot_,
     parseTask: apiParseTask_,
+    transcribe: apiTranscribe_,
     discardShots: apiDiscardShots_,
     addLog: apiAddLog_,
     deleteLog: apiDeleteLog_,
@@ -624,6 +625,19 @@ function apiParseTask_(req, s) {
     shots: []
   };
   return { task: task, transcript: str(j.transcript, 1000) || text };
+}
+
+/** 音声 → 文字（ブラウザの音声認識が使えない端末で、入力欄へ書き取るとき） */
+function apiTranscribe_(req, s) {
+  const audio = String(req.audio || '');
+  const mime = String(req.mime || '').split(';')[0];
+  if (!audio || !/^audio\//.test(mime)) throw appErr_('音声データが正しくありません。');
+  if (audio.length > 8 * 1024 * 1024) throw appErr_('録音が長すぎます。1分半以内でお願いします。');
+  checkRate_(s.email, 'tr', PARSE_DAILY_LIMIT, '音声入力');
+  const sys = '日本語の音声を文字に起こします。話された内容だけを、句読点を補った自然な日本語の文で出力してください。前置き・説明・引用符・話者名は書かず、言いよどみ（えー、あの等）は省きます。聞き取れない場合は何も出力しません。';
+  const text = geminiCall_(sys, [{ text: '次の音声を文字に起こしてください。' }, { inlineData: { mimeType: mime, data: audio } }],
+    { temperature: 0, maxOutputTokens: 2048 });
+  return { text: String(text || '').replace(/^["「]|["」]$/g, '').trim().slice(0, 2000) };
 }
 
 /** TTSに渡す前の最終クリーニング：前置き・ラベル・演出指示・記号を除去 */

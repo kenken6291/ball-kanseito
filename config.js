@@ -4,7 +4,7 @@
  */
 window.APP_CONFIG = {
   APP_NAME: 'ボール管制塔～タスク管理',
-  VERSION: 'v1.3.1',
+  VERSION: 'v1.3.2',
 
   // GASウェブアプリのURL（https://script.google.com/macros/s/.../exec）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwRtwC8UG6W3MoMJggg0iBrUm0cefnffG9Ynyu-wrUjsbzturdanPJ-zlJwZJvkpqdvRQ/exec',

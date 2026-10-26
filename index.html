@@ -122,7 +122,7 @@
 
     <!-- 音声・ひとこと登録 -->
     <form id="quickAdd" class="quick-add" novalidate>
-      <button type="button" id="btnVoice" class="mic" aria-label="声でミッションを登録" aria-pressed="false"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></svg></button>
+      <button type="button" id="btnVoice" class="mic" aria-label="声でミッションを登録" data-label="声でミッションを登録" aria-pressed="false"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></svg></button>
       <input type="text" id="quickText" maxlength="1000" autocomplete="off"
         placeholder="話すか書くだけで登録：例「金曜までに町内会だよりの原稿、佐藤さんの写真待ち」" aria-label="ひとことで登録">
       <button type="submit" class="btn amber" id="btnQuick">登録</button>
@@ -225,7 +225,7 @@
     <p class="parse-note" id="parseNote" hidden></p>
     <input type="hidden" name="taskId">
     <label class="field">ミッション名
-      <input type="text" name="title" maxlength="80" required placeholder="例：町内会だよりの原稿">
+      <input type="text" name="title" maxlength="80" required placeholder="例：町内会だよりの原稿" data-voice="ミッション名">
     </label>
     <div class="grid2">
       <label class="field">分類
@@ -282,7 +282,7 @@
       </div>
     </fieldset>
     <label class="field">次にやること
-      <textarea name="nextAction" rows="2" maxlength="300" placeholder="例：写真を3枚選ぶ"></textarea>
+      <textarea name="nextAction" rows="2" maxlength="300" placeholder="例：写真を3枚選ぶ" data-voice="次にやること"></textarea>
     </label>
 
     <fieldset class="ball-pick">
@@ -310,7 +310,7 @@
 
       <div id="bulkBox" class="bulk-box" hidden>
         <label class="field">1行に1人ずつ入力（名前, 所属, 連絡先 の順。所属・連絡先は省略可）
-          <textarea id="bulkText" rows="5" placeholder="佐藤一郎, 3年2組, sato@example.com&#10;鈴木花子, 3年1組&#10;田中"></textarea>
+          <textarea id="bulkText" rows="5" data-voice="名簿" placeholder="佐藤一郎, 3年2組, sato@example.com&#10;鈴木花子, 3年1組&#10;田中"></textarea>
         </label>
         <div class="row-btns">
           <button type="button" class="btn primary small" id="btnBulkAdd">一覧に追加</button>
@@ -361,10 +361,10 @@
       <input type="date" name="date" required>
     </label>
     <label class="field">やったこと
-      <textarea name="text" rows="3" maxlength="500" required placeholder="例：構成案を作って佐藤さんに送った"></textarea>
+      <textarea name="text" rows="3" maxlength="500" required placeholder="例：構成案を作って佐藤さんに送った" data-voice="やったこと"></textarea>
     </label>
     <label class="field">次にやること（更新）
-      <textarea name="nextAction" rows="2" maxlength="300"></textarea>
+      <textarea name="nextAction" rows="2" maxlength="300" data-voice="次にやること"></textarea>
     </label>
     <p class="form-msg" role="alert"></p>
     <div class="dlg-actions">
@@ -429,7 +429,7 @@
       <li><b>ミッションを登録</b>マイクを押して「金曜までに町内会だよりの原稿、佐藤さんの写真待ち」のように話すだけ。途中で考えて間が空いても聞き続け、3秒ほど黙ると確定します（秒数は設定で変更可）。AIが名前・締め切り・返事待ちの相手を読み取って入力欄を埋めます。文字で書いて「登録」でも同じです。締め切りは「明日」「今週金曜」などのボタンでも選べます。</li>
       <li><b>ボールの所在を決める</b>返事待ちなら「相手」を選び、待っている人を登録します。何人でも登録でき、「まとめて追加」で名簿を貼り付けることもできます。調整さんなど返事を確かめる場所のURLや、LINEなどのスクリーンショットも登録できます。</li>
       <li><b>回答をチェック</b>返事が来た人は「ボールの所在」で「回答済み」にチェック。全員そろうとボールが自分に戻ります。期日を過ぎた未回答の人には、催促メールの下書きをまとめて開けます。</li>
-      <li><b>今日やったことを記録</b>便の「記録」から書くと +10 XP。搭乗待ちの便は自動で飛行中になります。</li>
+      <li><b>今日やったことを記録</b>便の「記録」から書くと +10 XP。入力欄のマイクを押せば声でも書けます。搭乗待ちの便は自動で飛行中になります。</li>
       <li><b>着陸させる</b>終わったら「着陸」。+50 XP、締め切りに間に合えばさらに +30 XP と着陸映像。</li>
       <li><b>工程表で日程を見る</b>「工程表」に切り替えると、ミッションが横長のバーで並びます。バーをドラッグすると日程ごと移動、右端で締め切り、左端で開始日を変えられます。</li>
       <li><b>実況を聞く</b>上の「管制塔の実況を聞く」で、AI管制官がいまの状況を読み上げます。</li>

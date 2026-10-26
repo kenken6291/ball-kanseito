@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔～タスク管理 — app.js v1.3.1（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
+   ボール管制塔～タスク管理 — app.js v1.3.2（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
    認証 / 案内板描画 / ボール所在 / 本日の記録 / XP・階級
    実況（Gemini + TTS 再生）/ Google Earth Studio 映像演出
    ========================================================= */
@@ -674,15 +674,18 @@
     f.elements.deadline.addEventListener('input', updateDuePreview);
   }
 
-  /* ---------------- 音声・ひとこと登録 ---------------- */
+  /* ---------------- 音声入力（ひとこと登録・各入力欄の共通エンジン） ---------------- */
   // 話の途中で少し間が空いても止めずに聞き続け、「無音が一定時間続いたら確定」する。
   // ブラウザが勝手に認識を終えても、利用者が確定するまで自動で再開してつなげる。
+  // mode 'quick' … ひとこと登録（確定後に AI が内容を読み取る）
+  // mode 'field' … 入力欄への書き取り（話した文をそのまま欄に追記）
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const IS_ANDROID = /Android/i.test(navigator.userAgent);
   const voice = {
     rec: null, media: null, active: false, useRecorder: !SR,
-    committed: '', session: '', userStop: false, failed: false,
-    lastHeard: 0, startedAt: 0, tick: 0, maxTimer: 0, audioCtx: null
+    committed: '', session: '', base: '', userStop: false, failed: false,
+    lastHeard: 0, startedAt: 0, tick: 0, maxTimer: 0, audioCtx: null,
+    mode: 'quick', target: null, btn: null, statusEl: null
   };
   const VOICE_MAX_MS = 3 * 60 * 1000;     // 1回の音声入力の上限（3分）
   const NO_SPEECH_MS = 10000;             // 話し始めを待つ時間
@@ -702,28 +705,52 @@
     $('#btnQuick').disabled = !!busy;
   }
 
+  function voiceStatus(msg, busy) {
+    if (voice.mode === 'quick') { setQuickStatus(msg, busy); return; }
+    const p = voice.statusEl;
+    if (!p) return;
+    p.textContent = msg || '';
+    p.hidden = !msg;
+    p.classList.toggle('busy', !!busy);
+  }
+
   function voiceUI(on, msg) {
     voice.active = on;
-    const b = $('#btnVoice');
-    b.classList.toggle('on', on);
-    b.setAttribute('aria-pressed', String(on));
-    b.setAttribute('aria-label', on ? '話し終わったら押して確定' : '声でミッションを登録');
-    if (msg !== undefined) setQuickStatus(msg);
+    const b = voice.btn;
+    if (b) {
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+      b.setAttribute('aria-label', on ? '話し終わったら押して確定' : (b.dataset.label || '音声で入力'));
+    }
+    if (msg !== undefined) voiceStatus(msg);
   }
 
   function listeningHint() {
     const ms = silenceMs();
     return ms
-      ? '聞いています…　途中で間が空いても大丈夫です。' + (ms / 1000) + '秒ほど黙ると確定します（マイクを押してもすぐ確定）'
-      : '聞いています…　途中で間が空いても大丈夫です。話し終わったらマイクを押して確定してください';
+      ? '聞いています…　間が空いても大丈夫。' + (ms / 1000) + '秒ほど黙ると確定（マイクを押してもすぐ確定）'
+      : '聞いています…　間が空いても大丈夫。話し終わったらマイクを押して確定';
   }
 
-  async function toggleVoice() {
-    if (voice.active) { finishVoice(); return; }
+  /** マイクボタンから呼ぶ。別の欄で聞き取り中ならそちらを先に確定する */
+  async function toggleVoice(opts) {
+    if (voice.active) {
+      const same = voice.btn === opts.btn;
+      finishVoice();
+      if (same) return;
+      await new Promise(r => setTimeout(r, 400));
+      if (voice.active) return;
+    }
+    voice.mode = opts.mode;
+    voice.target = opts.target;
+    voice.btn = opts.btn;
+    voice.statusEl = opts.statusEl || null;
     unlockAudio();
     stopAudio();
     if (voice.useRecorder) await startRecording(); else startRecognition();
   }
+
+  const quickVoice = () => toggleVoice({ mode: 'quick', target: $('#quickText'), btn: $('#btnVoice') });
 
   /* --- 音声認識（文字起こしはブラウザ側） --- */
   function startRecognition() {
@@ -733,12 +760,19 @@
     voice.failed = false;
     voice.startedAt = Date.now();
     voice.lastHeard = 0;
-    $('#quickText').value = '';
+    if (voice.mode === 'quick') voice.target.value = '';
+    voice.base = voice.target.value;
     voiceUI(true, listeningHint());
     startTick();
     clearTimeout(voice.maxTimer);
     voice.maxTimer = setTimeout(finishVoice, VOICE_MAX_MS);
     openRecognition();
+  }
+
+  function showSpeech(text) {
+    const t = voice.target;
+    t.value = joinSpeech(voice.base, text);
+    if (t.tagName === 'TEXTAREA') t.scrollTop = t.scrollHeight;
   }
 
   function openRecognition() {
@@ -759,28 +793,26 @@
       }
       voice.session = fin;
       voice.lastHeard = Date.now();
-      $('#quickText').value = joinSpeech(voice.committed, fin + interim);
+      showSpeech(joinSpeech(voice.committed, fin + interim));
     };
 
     rec.onerror = e => {
       if (e.error === 'no-speech' || e.error === 'aborted') return;   // 間が空いただけ。onend で再開する
       voice.failed = true;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        setQuickStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。');
+        voiceStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。');
       } else if (e.error === 'network' || e.error === 'audio-capture') {
         voice.useRecorder = true;
-        setQuickStatus('この端末の音声認識が使えないため、録音してAIで聞き取る方式に切り替えました。もう一度マイクを押してください。');
+        voiceStatus('この端末の音声認識が使えないため、録音してAIで聞き取る方式に切り替えました。もう一度マイクを押してください。');
       }
     };
 
     rec.onend = () => {
       if (voice.rec !== rec) return;   // 古い認識セッションの終了通知は無視
-      // ここまでの確定分を足し込む
       voice.committed = joinSpeech(voice.committed, voice.session);
       voice.session = '';
       voice.rec = null;
       if (voice.active && !voice.userStop && !voice.failed) {
-        // 利用者が確定するまで聞き続ける（ブラウザが途中で認識を閉じても再開）
         setTimeout(() => {
           if (!voice.active || voice.userStop) return;
           try { openRecognition(); } catch (err) { endRecognition(); }
@@ -804,11 +836,26 @@
     clearTimeout(voice.maxTimer);
     const failed = voice.failed;
     voiceUI(false);
-    const text = ($('#quickText').value || voice.committed).trim();
-    $('#quickText').value = text;
     if (failed) return;
-    if (text) parseAndOpen({ text: text });
-    else setQuickStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。');
+    const said = voice.committed.trim();
+    showSpeech(said);
+    if (voice.mode === 'quick') {
+      const text = voice.target.value.trim();
+      if (text) parseAndOpen({ text: text });
+      else voiceStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。');
+      return;
+    }
+    fieldDone(said);
+  }
+
+  /** 入力欄への書き取りが終わったとき */
+  function fieldDone(said) {
+    const t = voice.target;
+    if (!said) { voiceStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。'); return; }
+    voiceStatus('');
+    t.dispatchEvent(new Event('input', { bubbles: true }));
+    t.focus();
+    try { t.setSelectionRange(t.value.length, t.value.length); } catch (e) { /* noop */ }
   }
 
   /** 話し言葉をつなぐ（句読点がなければ読点を補う） */
@@ -827,8 +874,7 @@
       if (!voice.active) return;
       const now = Date.now();
       const ms = silenceMs();
-      const heard = voice.lastHeard > 0;
-      if (!heard) {
+      if (!voice.lastHeard) {
         if (now - voice.startedAt > NO_SPEECH_MS) finishVoice();
         return;
       }
@@ -836,9 +882,9 @@
       const quiet = now - voice.lastHeard;
       if (quiet >= ms) { finishVoice(); return; }
       if (quiet >= 1000) {
-        setQuickStatus('このまま黙っていると、あと' + Math.ceil((ms - quiet) / 1000) + '秒で確定します…（続けて話せば延長）');
+        voiceStatus('このまま黙っていると、あと' + Math.ceil((ms - quiet) / 1000) + '秒で確定します…（続けて話せば延長）');
       } else {
-        setQuickStatus(voice.media ? '録音中…　途中で間が空いても大丈夫です' : listeningHint());
+        voiceStatus(voice.media ? '録音中…　間が空いても大丈夫です' : listeningHint());
       }
     }, 250);
   }
@@ -861,16 +907,18 @@
   /* --- 録音方式（音声認識が使えないブラウザ用。文字起こしは Gemini） --- */
   async function startRecording() {
     if (!navigator.mediaDevices || !window.MediaRecorder) {
-      setQuickStatus('このブラウザでは音声入力が使えません。文字で入力してください。');
+      voiceStatus('このブラウザでは音声入力が使えません。文字で入力してください。');
       return;
     }
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (e) { setQuickStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。'); return; }
+    catch (e) { voiceStatus('マイクが使えません。ブラウザの設定でこのサイトのマイクを許可してください。'); return; }
     const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
       .find(m => window.MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
     const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     const chunks = [];
+    const mode = voice.mode;
+    const target = voice.target;
     mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
       stopTick();
@@ -880,9 +928,20 @@
       voice.media = null;
       voiceUI(false);
       const blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
-      if (!voice.lastHeard || blob.size < 2000) { setQuickStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。'); return; }
+      if (!voice.lastHeard || blob.size < 2000) { voiceStatus('声が聞き取れませんでした。もう一度マイクを押して話してください。'); return; }
       const b64 = await blobToBase64(blob);
-      parseAndOpen({ audio: b64, mime: (blob.type || 'audio/webm').split(';')[0] });
+      const audioMime = (blob.type || 'audio/webm').split(';')[0];
+      if (mode === 'quick') { parseAndOpen({ audio: b64, mime: audioMime }); return; }
+      voiceStatus('AIが文字にしています…', true);
+      try {
+        const r = await api('transcribe', { audio: b64, mime: audioMime });
+        voice.target = target;
+        voice.base = target.value;
+        showSpeech(r.text);
+        fieldDone(String(r.text || '').trim());
+      } catch (err) {
+        voiceStatus(err.message);
+      }
     };
 
     // 声の大きさを見て「話している／黙っている」を判定
@@ -913,10 +972,42 @@
 
     voice.media = mr;
     mr.start(1000);
-    voiceUI(true, '録音中…　途中で間が空いても大丈夫です');
+    voiceUI(true, '録音中…　間が空いても大丈夫です');
     startTick();
     clearTimeout(voice.maxTimer);
     voice.maxTimer = setTimeout(finishVoice, 90 * 1000);
+  }
+
+  /* --- 入力欄にマイクボタンを付ける（data-voice の付いた欄） --- */
+  const MIC_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></svg>';
+
+  function setupFieldMics() {
+    $$('[data-voice]').forEach(el => {
+      if (el.parentElement.classList.contains('voice-field')) return;
+      const wrap = document.createElement('span');
+      wrap.className = 'voice-field' + (el.tagName === 'TEXTAREA' ? ' is-area' : '');
+      el.parentNode.insertBefore(wrap, el);
+      wrap.appendChild(el);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'field-mic';
+      b.innerHTML = MIC_SVG;
+      b.dataset.label = (el.dataset.voice || '音声') + 'を声で入力';
+      b.setAttribute('aria-label', b.dataset.label);
+      b.setAttribute('aria-pressed', 'false');
+      wrap.appendChild(b);
+      const st = document.createElement('span');
+      st.className = 'mic-status';
+      st.setAttribute('aria-live', 'polite');
+      st.hidden = true;
+      wrap.after(st);
+      b.addEventListener('click', () => toggleVoice({ mode: 'field', target: el, btn: b, statusEl: st }));
+    });
+    // ダイアログを閉じたら聞き取りも止める
+    $$('dialog').forEach(d => d.addEventListener('close', () => {
+      if (voice.active && voice.target && d.contains(voice.target)) finishVoice();
+      $$('.mic-status', d).forEach(st => { st.hidden = true; st.textContent = ''; });
+    }));
   }
 
   function blobToBase64(blob) {
@@ -1936,7 +2027,8 @@
   /* ---------------- イベント配線 ---------------- */
   function bindApp() {
     $('#btnAdd').addEventListener('click', () => openTaskDialog(null));
-    $('#btnVoice').addEventListener('click', toggleVoice);
+    $('#btnVoice').addEventListener('click', quickVoice);
+    setupFieldMics();
     $('#quickAdd').addEventListener('submit', e => {
       e.preventDefault();
       const text = $('#quickText').value.trim();

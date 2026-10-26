@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔～タスク管理 — style.css v1.3.0
+   ボール管制塔～タスク管理 — style.css v1.3.2
    主役は「発着案内板」。案内板は実物同様つねに紺の筐体＋琥珀のドット文字、
    まわりの紙面はライト／ダークに追従する。
    ========================================================= */
@@ -753,6 +753,28 @@ button.chip { font: inherit; font-size: .78rem; font-weight: 700; cursor: pointe
   .g-code { display: none; }
   .date-line { grid-template-columns: 1fr; gap: 4px; }
   .due-preview { margin: 0; }
+}
+
+
+/* =========================================================
+   v1.3.2 入力欄の音声入力・ダイアログのボタン配置
+   ========================================================= */
+.voice-field { position: relative; display: block; }
+.voice-field > input, .voice-field > textarea { padding-right: 52px; }
+.field-mic {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--ink);
+}
+.voice-field.is-area .field-mic { top: 6px; transform: none; }
+.field-mic.on { background: var(--signal); border-color: var(--signal); color: #fff; animation: micPulse 1.4s ease-out infinite; }
+.mic-status { display: block; margin-top: 4px; font-size: .82rem; font-weight: 700; color: var(--muted); }
+
+@media (max-width: 640px) {
+  .dlg form > .dlg-actions { flex-wrap: nowrap; gap: 6px; }
+  .dlg form > .dlg-actions .spacer { display: none; }
+  .dlg form > .dlg-actions .btn { flex: 1 1 auto; padding: .5em .6em; min-width: 0; }
+  .dlg form > .dlg-actions .hint { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
