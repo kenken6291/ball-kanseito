@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=DotGothic16&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=1.4.0">
 </head>
 <body>
 
@@ -405,6 +405,11 @@
       </select>
     </label>
 
+    <label class="field">AIモデル（実況・音声登録に使う管制官の頭脳）
+      <select name="geminiModel" id="modelSelect"></select>
+    </label>
+    <p class="hint">選んだモデルが使えない時は、汎用の最新モデルに自動で切り替わります。<span id="modelInfo"></span></p>
+
     <div class="backup" id="backupBox">
       <button type="button" class="btn ghost" id="btnBackup">Googleドライブにバックアップ</button>
       <span id="backupResult" class="hint"></span>
@@ -472,7 +477,7 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js"></script>
-<script src="app.js"></script>
+<script src="config.js?v=1.4.0"></script>
+<script src="app.js?v=1.4.0"></script>
 </body>
 </html>

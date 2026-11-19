@@ -1,5 +1,5 @@
 /* =========================================================
-   ボール管制塔～タスク管理 — app.js v1.3.2（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
+   ボール管制塔～タスク管理 — app.js v1.4.0（Geminiモデル選択）（音声・ひとこと登録／日程ボタン／工程表ドラッグ）（返事待ちの複数人・確認先URL・確認先スクショ）
    認証 / 案内板描画 / ボール所在 / 本日の記録 / XP・階級
    実況（Gemini + TTS 再生）/ Google Earth Studio 映像演出
    ========================================================= */
@@ -12,8 +12,12 @@
   const LS = {
     token: 'bk_token', gas: 'bk_gas_url', voice: 'bk_voice', bg: 'bk_bg',
     auto: 'bk_auto_narrate', onboard: 'bk_onboarded',
-    view: 'bk_view', zoom: 'bk_zoom', silence: 'bk_voice_silence'
+    view: 'bk_view', zoom: 'bk_zoom', silence: 'bk_voice_silence',
+    model: 'bk_gemini_model'
   };
+  const MODEL_OPTIONS = (Array.isArray(CFG.GEMINI_MODEL_OPTIONS) && CFG.GEMINI_MODEL_OPTIONS.length)
+    ? CFG.GEMINI_MODEL_OPTIONS
+    : [{ value: '', label: '自動モード（汎用の最新）' }];
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -117,7 +121,7 @@
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({}, data, { action: action, token: state.token }))
+        body: JSON.stringify(Object.assign({ model: geminiModel() }, data, { action: action, token: state.token }))
       });
     } catch (e) {
       throw new Error('サーバーにつながりません。通信状態とGASのURLを確認してください。');
@@ -1963,6 +1967,27 @@
     else if (document.body.classList.contains('has-bg')) v.play().catch(() => {});
   });
 
+  /* ---------------- AIモデル選択 ---------------- */
+  function geminiModel() {
+    const saved = store(LS.model);
+    if (saved !== null && MODEL_OPTIONS.some(o => o.value === saved)) return saved;
+    return CFG.GEMINI_MODEL || '';
+  }
+  function modelLabel(v) {
+    const o = MODEL_OPTIONS.find(x => x.value === v);
+    return o ? o.label : (v || '自動モード（汎用の最新）');
+  }
+  function setupModelPicker() {
+    const sel = $('#modelSelect');
+    if (!sel || sel.options.length) return;
+    MODEL_OPTIONS.forEach(o => {
+      const op = document.createElement('option');
+      op.value = o.value;
+      op.textContent = o.label;
+      sel.appendChild(op);
+    });
+  }
+
   /* ---------------- 設定 ---------------- */
   function openSettings() {
     const d = $('#settingsDialog');
@@ -1975,6 +2000,9 @@
     f.elements.autoNarrate.checked = store(LS.auto) !== 'off';
     f.elements.bg.checked = store(LS.bg) !== 'off';
     f.elements.voiceSilence.value = store(LS.silence) || String(CFG.VOICE_SILENCE_SEC || 3);
+    setupModelPicker();
+    f.elements.geminiModel.value = geminiModel();
+    $('#modelInfo').textContent = '';
     $('#pingResult').textContent = '';
     $('#backupResult').textContent = '';
     $('#backupBox').hidden = !state.token || $('#appView').hidden;
@@ -1994,6 +2022,7 @@
     store(LS.auto, f.elements.autoNarrate.checked ? null : 'off');
     store(LS.bg, f.elements.bg.checked ? null : 'off');
     store(LS.silence, f.elements.voiceSilence.value);
+    store(LS.model, f.elements.geminiModel.value);
     if (!f.elements.voice.checked) stopAudio();
     $('#settingsDialog').close();
     if (!$('#appView').hidden) applyBackground();
@@ -2010,6 +2039,11 @@
       const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'ping' }) });
       const j = await res.json();
       out.textContent = j.ok ? '接続できました（サーバー v' + j.version + '）' : '応答はありましたが、エラーでした：' + j.error;
+      if (j.ok) {
+        $('#modelInfo').textContent = j.defaultModel
+          ? '（自動モードの現在のモデル：' + j.defaultModel + '）'
+          : '（サーバーが旧バージョンのため、モデル選択はGASを再デプロイすると有効になります）';
+      }
     } catch (err) {
       out.textContent = '接続できません。URLとデプロイ設定を確認してください。';
     }

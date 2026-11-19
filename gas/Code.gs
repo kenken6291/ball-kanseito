@@ -1,15 +1,23 @@
 /**
  * ボール管制塔～タスク管理（ball-kanseito）— GAS バックエンド
- * v1.3.0（音声・ひとこと登録、開始日、工程表のドラッグ日程変更）
+ * v1.4.0（Geminiモデル選択・該当なし時の自動切り替え）
  *
  * 認証 / ミッション(タスク)CRUD / 実績ログ / Gemini実況 / Gemini TTS / Drive保存 / メール送信
  * フロントからは Content-Type: text/plain で JSON を POST する（CORSプリフライト回避）
  *
  * 初回：エディタで setup() を1回実行 → スクリプトプロパティに GEMINI_API_KEY を設定 → ウェブアプリとしてデプロイ
  * ※コードを変更したら「デプロイを管理」→ 編集 → バージョン「新バージョン」で再デプロイ（URLはそのまま）
+ *
+ * 【Geminiモデルの決定順】
+ *   1. 画面の「設定 > AIモデル」で選ばれたモデル（config.js の GEMINI_MODEL_OPTIONS）
+ *   2. スクリプトプロパティ GEMINI_MODEL（任意。例: gemini-4-hydrogen）
+ *   3. 汎用の最新モデル FALLBACK_GEMINI_MODELS を先頭から順に試す
+ *   ※ モデル名は "gemini-" で始まる英小文字・数字・ハイフン・ドットのみ受け付ける。
+ *   ※ 指定モデルに該当がない（廃止・未公開・名前違い）場合は、自動で 3 に切り替えて再実行する。
+ *   ※ 読み上げ（TTS）は スクリプトプロパティ TTS_MODEL → FALLBACK_TTS_MODELS の順。
  */
 
-const APP_VERSION = '1.3.2';
+const APP_VERSION = '1.4.0';
 const APP_NAME = 'ボール管制塔～タスク管理';   // メール件名・本文に表示
 
 const DEF = {
@@ -31,6 +39,18 @@ const MAX_LINKS = 10;             // 確認先URLの上限
 const MAX_SHOTS = 20;             // 確認先スクリーンショットの上限（1ミッション）
 const MAX_SHOT_BYTES = 6 * 1024 * 1024;
 const SHOT_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+
+// 指定なし・該当なしの時に使う汎用の最新モデル（先頭から順に試す）
+//   gemini-flash-latest : Googleが常に最新の汎用モデルへ自動で差し替えるエイリアス
+//   gemini-4-hydrogen   : 2026年11月時点の汎用最新モデル（「日々の暮らしをサポート」）
+//   gemini-3.8-flash    : 最終的な保険
+const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-3.8-flash'];
+// 読み上げモデルの候補（スクリプトプロパティ TTS_MODEL が最優先）
+const FALLBACK_TTS_MODELS = ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'];
+const GEMINI_MODEL_PATTERN = /^gemini-[a-z0-9][a-z0-9.\-]{0,60}$/;
+const GEMINI_RETRY_CODES = [429, 500, 503];
+const GEMINI_MAX_ATTEMPTS = 3;
+let REQUEST_MODEL_ = '';          // このリクエストで画面から指定されたモデル
 
 /* =========================================================
  * 初期セットアップ（エディタから1回だけ実行）
@@ -72,7 +92,7 @@ function setup() {
  * ルーター
  * ========================================================= */
 function doGet() {
-  return json_({ ok: true, app: APP_NAME, version: APP_VERSION });
+  return json_(Object.assign({ ok: true }, apiPing_()));
 }
 
 function doPost(e) {
@@ -82,6 +102,7 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'リクエストの形式が正しくありません。' });
   }
+  REQUEST_MODEL_ = String(req.model || '');
 
   const PUBLIC = {
     ping: apiPing_,
@@ -129,7 +150,7 @@ function doPost(e) {
  * 認証系API
  * ========================================================= */
 function apiPing_() {
-  return { app: APP_NAME, version: APP_VERSION };
+  return { app: APP_NAME, version: APP_VERSION, defaultModel: resolveGeminiModel_(''), fallbackModels: FALLBACK_GEMINI_MODELS };
 }
 
 function apiRegister_(req) {
@@ -515,27 +536,76 @@ function buildContext_(type, tasks, logs, s, taskId) {
 }
 
 function gemini_(system, user) {
-  return geminiCall_(system, [{ text: user }], { temperature: 0.9, maxOutputTokens: 2048 });
+  return geminiCall_(system, [{ text: user }], { temperature: 0.9, maxOutputTokens: 8192 });
+}
+
+/**
+ * 使用するGeminiモデル名を決める。画面の指定 → スクリプトプロパティ → 汎用の最新 の順。
+ * 形式が正しくない名前は無視する。
+ */
+function resolveGeminiModel_(requested) {
+  const req = String(requested || '').trim().toLowerCase();
+  if (req && GEMINI_MODEL_PATTERN.test(req)) return req;
+  const prop = String(prop_('GEMINI_MODEL', '')).trim().toLowerCase();
+  if (prop && GEMINI_MODEL_PATTERN.test(prop)) return prop;
+  return FALLBACK_GEMINI_MODELS[0];
+}
+
+/** 1モデルを呼び出す。混雑（429/500/503）は待ち時間を伸ばしながら再試行 */
+function geminiFetch_(model, key, body) {
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+  const opt = {
+    method: 'post', contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
+    payload: JSON.stringify(body), muteHttpExceptions: true
+  };
+  let code = 0, text = '';
+  for (let i = 1; i <= GEMINI_MAX_ATTEMPTS; i++) {
+    const res = UrlFetchApp.fetch(url, opt);
+    code = res.getResponseCode();
+    text = res.getContentText() || '';
+    if (code === 200 || GEMINI_RETRY_CODES.indexOf(code) < 0 || i === GEMINI_MAX_ATTEMPTS) break;
+    Utilities.sleep(2000 * i);
+  }
+  return { code: code, text: text };
+}
+
+/** モデルが存在しない（廃止・未公開・名前違い）ことを示す応答か */
+function isModelNotFound_(code, text) {
+  if (code === 404) return true;
+  if (code === 400) return /not found|is not supported|NOT_FOUND|unknown model|invalid model/i.test(text);
+  return false;
+}
+
+/** 候補モデルを順に試す。該当なしのモデルは飛ばして次へ。戻り値 { json, usedModel } */
+function geminiWithFallback_(models, key, body, label) {
+  const list = [];
+  models.forEach(m => { if (m && list.indexOf(m) < 0) list.push(m); });
+  let r = null, used = list[0];
+  for (let i = 0; i < list.length; i++) {
+    used = list[i];
+    r = geminiFetch_(used, key, body);
+    if (!isModelNotFound_(r.code, r.text)) break;
+    console.warn(label + 'モデル「' + used + '」に該当がないため次の候補に切り替えます');
+  }
+  let json = {};
+  try { json = JSON.parse(r.text || '{}'); } catch (e) { json = {}; }
+  if (r.code !== 200) {
+    throw appErr_(label + 'エラー（' + r.code + ' / ' + used + '）：' + ((json.error && json.error.message) || ''));
+  }
+  return { json: json, usedModel: used };
 }
 
 function geminiCall_(system, parts, generationConfig) {
   const key = prop_('GEMINI_API_KEY', '');
   if (!key) throw appErr_('サーバーにGEMINI_API_KEYが設定されていません。');
-  const model = prop_('GEMINI_MODEL', 'gemini-2.5-flash');
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
+  const model = resolveGeminiModel_(REQUEST_MODEL_);
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: parts }],
     generationConfig: generationConfig
   };
-  const res = UrlFetchApp.fetch(url, {
-    method: 'post', contentType: 'application/json',
-    headers: { 'x-goog-api-key': key },
-    payload: JSON.stringify(body), muteHttpExceptions: true
-  });
-  const code = res.getResponseCode();
-  const json = JSON.parse(res.getContentText() || '{}');
-  if (code !== 200) throw appErr_('Gemini APIエラー（' + code + '）：' + ((json.error && json.error.message) || ''));
+  const json = geminiWithFallback_([model].concat(FALLBACK_GEMINI_MODELS), key, body, 'Gemini API').json;
   const cand = json.candidates && json.candidates[0];
   const out = (cand && cand.content && cand.content.parts) || [];
   return out.filter(p => p.text && !p.thought).map(p => p.text).join('');
@@ -595,7 +665,7 @@ function apiParseTask_(req, s) {
 
   const parts = [{ text: prompt }];
   if (audio) parts.push({ inlineData: { mimeType: mime, data: audio } });
-  const raw = geminiCall_(PARSE_SYSTEM, parts, { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: 'application/json' });
+  const raw = geminiCall_(PARSE_SYSTEM, parts, { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: 'application/json' });
 
   let j;
   try { j = JSON.parse(String(raw).replace(/```json|```/g, '').trim()); }
@@ -636,7 +706,7 @@ function apiTranscribe_(req, s) {
   checkRate_(s.email, 'tr', PARSE_DAILY_LIMIT, '音声入力');
   const sys = '日本語の音声を文字に起こします。話された内容だけを、句読点を補った自然な日本語の文で出力してください。前置き・説明・引用符・話者名は書かず、言いよどみ（えー、あの等）は省きます。聞き取れない場合は何も出力しません。';
   const text = geminiCall_(sys, [{ text: '次の音声を文字に起こしてください。' }, { inlineData: { mimeType: mime, data: audio } }],
-    { temperature: 0, maxOutputTokens: 2048 });
+    { temperature: 0, maxOutputTokens: 8192 });
   return { text: String(text || '').replace(/^["「]|["」]$/g, '').trim().slice(0, 2000) };
 }
 
@@ -662,8 +732,7 @@ function cleanNarration_(raw) {
 
 function tts_(text) {
   const key = prop_('GEMINI_API_KEY', '');
-  const model = prop_('TTS_MODEL', 'gemini-2.5-flash-preview-tts');
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
+  if (!key) throw new Error('サーバーにGEMINI_API_KEYが設定されていません。');
   const body = {
     contents: [{ parts: [{ text: text }] }],
     generationConfig: {
@@ -671,14 +740,8 @@ function tts_(text) {
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: prop_('TTS_VOICE', 'Puck') } } }
     }
   };
-  const res = UrlFetchApp.fetch(url, {
-    method: 'post', contentType: 'application/json',
-    headers: { 'x-goog-api-key': key },
-    payload: JSON.stringify(body), muteHttpExceptions: true
-  });
-  const code = res.getResponseCode();
-  const json = JSON.parse(res.getContentText() || '{}');
-  if (code !== 200) throw new Error('TTSエラー（' + code + '）：' + ((json.error && json.error.message) || ''));
+  const models = [prop_('TTS_MODEL', '')].concat(FALLBACK_TTS_MODELS);
+  const json = geminiWithFallback_(models, key, body, 'TTS').json;
   const cand = json.candidates && json.candidates[0];
   const parts = (cand && cand.content && cand.content.parts) || [];
   const audioPart = parts.find(p => p.inlineData && p.inlineData.data);

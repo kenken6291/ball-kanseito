@@ -1,4 +1,4 @@
-# ボール管制塔～タスク管理（ball-kanseito） v1.3.2
+# ボール管制塔～タスク管理（ball-kanseito） v1.4.0
 
 抱えている用事を「便」として発着案内板に並べ、締め切り・今日の成果・残り・**いま誰がボールを持っているか**を一目で見張るマルチタスク管理アプリ。完了は「着陸」、締め切り間近は「最終案内」、超過は「遅延」。AI管制官（Gemini）が状況を実況し、Gemini TTS で読み上げます。
 
@@ -152,3 +152,15 @@ ball-kanseito/
 
 ### バージョンを上げるとき
 `config.js` の `VERSION` と `Code.gs` の `APP_VERSION` をそろえて更新。画面右下とログイン画面、設定画面に表示されます。
+
+---
+
+## v1.4.0 Geminiモデル選択
+
+- 「設定 > AIモデル」で、実況・音声/ひとこと登録・文字起こしに使うモデルを選べます（端末ごとに保存）。
+  自動モード／4 Hydrogen／4 Neon／4 Carbon／4 Argon／3.8 Flash／3.5 Flash。選択肢は config.js の `GEMINI_MODEL_OPTIONS` で編集。
+- モデルの決定順：画面の選択 → スクリプトプロパティ `GEMINI_MODEL` → 汎用の最新（`gemini-flash-latest` → `gemini-4-hydrogen` → `gemini-3.8-flash`）。
+- 選んだモデルが廃止・未公開・名前違いで使えない時は、自動で汎用の最新モデルに切り替えて再実行します。混雑（429/500/503）は最大3回まで再試行。
+- 読み上げ（TTS）はスクリプトプロパティ `TTS_MODEL` → `gemini-2.5-flash-preview-tts` → `gemini-2.5-pro-preview-tts` の順。
+- 「接続を確認」で、自動モードが今どのモデルを使うかを表示します。
+
